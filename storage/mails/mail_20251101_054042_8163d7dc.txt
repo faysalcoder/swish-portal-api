@@ -1,0 +1,4 @@
+To: test@example.com
+Subject: Password reset
+
+Reset token: 709eb0fc5d72849a20e35ab45ef5cc7677c64cfaf758ed00dd825a6639d1eded
