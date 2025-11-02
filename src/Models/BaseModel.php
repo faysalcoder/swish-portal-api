@@ -5,6 +5,13 @@ use App\Database\Connection;
 use PDO;
 use PDOException;
 
+/**
+ * BaseModel - small ORM-style base class for simple CRUD
+ *
+ * Child models should set:
+ *   protected string $table = 'your_table';
+ *   protected array $fillable = ['col1','col2', ...]; // or leave empty to allow all
+ */
 abstract class BaseModel
 {
     protected string $table = '';
@@ -12,9 +19,13 @@ abstract class BaseModel
     protected array $fillable = []; // columns allowed for mass assignment; empty = allow all
     protected PDO $db;
 
+    /**
+     * Construct and initialize PDO connection.
+     *
+     * @throws PDOException if connection is not available
+     */
     public function __construct()
     {
-        // Initialize PDO connection once for all models
         $this->db = Connection::get();
         if (!$this->db instanceof PDO) {
             throw new PDOException('Database connection not available.');
@@ -22,14 +33,22 @@ abstract class BaseModel
     }
 
     /**
-     * Public accessor for the PDO connection.
-     * Use this if you need raw queries from controllers or other places.
+     * Backwards-compatible accessor used by older controllers:
+     * $this->model->db()
+     *
+     * @return PDO
      */
     public function db(): PDO
     {
         return $this->db;
     }
 
+    /**
+     * Find a row by primary key.
+     *
+     * @param int $id
+     * @return array|null
+     */
     public function find(int $id): ?array
     {
         $sql = "SELECT * FROM `{$this->table}` WHERE `{$this->primaryKey}` = :id LIMIT 1";
@@ -39,6 +58,14 @@ abstract class BaseModel
         return $row ?: null;
     }
 
+    /**
+     * Get all rows with optional ordering.
+     *
+     * @param int $limit
+     * @param int $offset
+     * @param array $orderBy example: ['created_at' => 'DESC']
+     * @return array
+     */
     public function all(int $limit = 100, int $offset = 0, array $orderBy = []): array
     {
         $orderSql = $this->buildOrderBy($orderBy);
@@ -50,6 +77,15 @@ abstract class BaseModel
         return $stmt->fetchAll(PDO::FETCH_ASSOC);
     }
 
+    /**
+     * Simple equality WHERE helper.
+     *
+     * @param array $conditions e.g. ['user_id' => 5, 'status' => 'active']
+     * @param int $limit
+     * @param int $offset
+     * @param array $orderBy
+     * @return array
+     */
     public function where(array $conditions = [], int $limit = 100, int $offset = 0, array $orderBy = []): array
     {
         $whereSql = '';
@@ -80,6 +116,13 @@ abstract class BaseModel
         return $stmt->fetchAll(PDO::FETCH_ASSOC);
     }
 
+    /**
+     * Insert record. Returns new ID.
+     *
+     * @param array $data
+     * @return int
+     * @throws PDOException
+     */
     public function create(array $data): int
     {
         $data = $this->onlyFillable($data);
@@ -88,7 +131,7 @@ abstract class BaseModel
         }
 
         $cols = array_keys($data);
-        $placeholders = array_map(fn($c) => ':' . $c, $cols);
+        $placeholders = array_map(function ($c) { return ':' . $c; }, $cols);
         $sql = "INSERT INTO `{$this->table}` (`" . implode('`,`', $cols) . "`) VALUES (" . implode(',', $placeholders) . ")";
         $stmt = $this->db->prepare($sql);
 
@@ -100,6 +143,13 @@ abstract class BaseModel
         return (int)$this->db->lastInsertId();
     }
 
+    /**
+     * Update record by primary key. Returns boolean success.
+     *
+     * @param int $id
+     * @param array $data
+     * @return bool
+     */
     public function update(int $id, array $data): bool
     {
         $data = $this->onlyFillable($data);
@@ -121,6 +171,12 @@ abstract class BaseModel
         return $stmt->execute();
     }
 
+    /**
+     * Delete by primary key.
+     *
+     * @param int $id
+     * @return bool
+     */
     public function delete(int $id): bool
     {
         $sql = "DELETE FROM `{$this->table}` WHERE `{$this->primaryKey}` = :id";
@@ -128,12 +184,24 @@ abstract class BaseModel
         return $stmt->execute([':id' => $id]);
     }
 
+    /**
+     * Only keep fillable keys. If $fillable is empty, return original data.
+     *
+     * @param array $data
+     * @return array
+     */
     protected function onlyFillable(array $data): array
     {
         if (empty($this->fillable)) return $data;
         return array_intersect_key($data, array_flip($this->fillable));
     }
 
+    /**
+     * Build ORDER BY clause from array
+     *
+     * @param array $orderBy
+     * @return string
+     */
     protected function buildOrderBy(array $orderBy): string
     {
         if (empty($orderBy)) return '';

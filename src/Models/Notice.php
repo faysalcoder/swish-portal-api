@@ -3,14 +3,14 @@ namespace App\Models;
 
 class Notice extends BaseModel
 {
-    // Use the real table name in your database. I set 'notices' to match your controller SQL.
+    // Use plural 'notices' if your DB table is named 'notices' (controller used 'notices')
     protected string $table = 'notices';
 
     protected array $fillable = [
         'title',
-        'notice_type',
+        'notice_type',   // 'file' or 'url' (as you defined earlier)
         'notice_note',
-        'timestamp',
+        'timestamp',     // created timestamp
         'valid_till',
         'user_id',
         'created_at',
@@ -18,44 +18,32 @@ class Notice extends BaseModel
     ];
 
     /**
-     * Find notice by ID
-     */
-    public function findById(int $id): ?array
-    {
-        return $this->find($id);
-    }
-
-    /**
-     * Get notices with optional conditions (default: latest first)
-     */
-    public function getAll(array $conditions = [], int $limit = 100, int $offset = 0): array
-    {
-        return $this->where($conditions, $limit, $offset, ['timestamp' => 'DESC']);
-    }
-
-    /**
-     * Create a new notice
+     * Convenience wrapper for create
      */
     public function createNotice(array $data): int
     {
-        // ensure timestamp if not provided
+        // ensure timestamps if not provided
         if (empty($data['timestamp'])) $data['timestamp'] = date('Y-m-d H:i:s');
+        if (empty($data['created_at'])) $data['created_at'] = date('Y-m-d H:i:s');
         return $this->create($data);
     }
 
-    /**
-     * Update an existing notice
-     */
     public function updateNotice(int $id, array $data): bool
     {
+        if (!isset($data['updated_at'])) $data['updated_at'] = date('Y-m-d H:i:s');
         return $this->update($id, $data);
     }
 
-    /**
-     * Delete a notice
-     */
-    public function deleteNotice(int $id): bool
+    public function getActive(int $limit = 100, int $offset = 0): array
     {
-        return $this->delete($id);
+        // returns notices where valid_till is null OR valid_till >= now
+        $now = date('Y-m-d H:i:s');
+        $sql = "SELECT * FROM `{$this->table}` WHERE `valid_till` IS NULL OR `valid_till` >= :now ORDER BY `created_at` DESC LIMIT :limit OFFSET :offset";
+        $stmt = $this->db->prepare($sql);
+        $stmt->bindValue(':now', $now);
+        $stmt->bindValue(':limit', $limit, \PDO::PARAM_INT);
+        $stmt->bindValue(':offset', $offset, \PDO::PARAM_INT);
+        $stmt->execute();
+        return $stmt->fetchAll(\PDO::FETCH_ASSOC);
     }
 }
