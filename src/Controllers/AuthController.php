@@ -69,20 +69,49 @@ class AuthController extends BaseController
     /**
      * Login
      * POST /api/v1/auth/login
+     *
+     * Accepts:
+     *  { "email": "...", "password": "..." }
+     * or
+     *  { "employee_id": "...", "password": "..." }
+     * or
+     *  { "identifier": "...", "password": "..." }  // identifier will be treated as email if contains '@'
      */
     public function login(): void
     {
         $data = $this->jsonInput();
-        $email = $data['email'] ?? null;
+        $identifier = $data['email'] ?? $data['employee_id'] ?? $data['identifier'] ?? null;
         $password = $data['password'] ?? null;
 
-        if (!$email || !$password) {
-            $this->error('Email and password are required', 422);
+        if (!$identifier || !$password) {
+            $this->error('Identifier (email or employee_id) and password are required', 422);
             return;
         }
 
         try {
-            $user = $this->userModel->findByEmail($email);
+            $user = null;
+
+            // Treat as email if contains @; otherwise treat as employee_id
+            if (strpos($identifier, '@') !== false) {
+                // email
+                if (method_exists($this->userModel, 'findByEmail')) {
+                    $user = $this->userModel->findByEmail((string)$identifier);
+                } else {
+                    // fallback to where helper
+                    $rows = $this->userModel->where(['email' => $identifier], 1, 0);
+                    $user = $rows[0] ?? null;
+                }
+            } else {
+                // employee id path
+                // Prefer a model helper if available, otherwise use where()
+                if (method_exists($this->userModel, 'findByEmployeeId')) {
+                    $user = $this->userModel->findByEmployeeId((string)$identifier);
+                } else {
+                    $rows = $this->userModel->where(['employee_id' => $identifier], 1, 0);
+                    $user = $rows[0] ?? null;
+                }
+            }
+
             if (!$user) {
                 $this->error('Invalid credentials', 401);
                 return;

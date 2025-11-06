@@ -107,6 +107,8 @@ register_shutdown_function(function () use ($isApi) {
 if (php_sapi_name() !== 'cli') {
     $origin = $_ENV['APP_CORS_ORIGIN'] ?? '*';
     header('Access-Control-Allow-Origin: ' . $origin);
+    $allowedOrigin = 'http://localhost:5173'; // or '*' for dev, but be careful in production
+header('Access-Control-Allow-Origin: ' . $allowedOrigin);
     header('Access-Control-Allow-Methods: GET, POST, PUT, PATCH, DELETE, OPTIONS');
     header('Access-Control-Allow-Headers: Authorization, Content-Type, Accept');
     header('Access-Control-Allow-Credentials: true');
