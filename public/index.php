@@ -105,13 +105,62 @@ register_shutdown_function(function () use ($isApi) {
 
 // Basic CORS for development (adjust in production)
 if (php_sapi_name() !== 'cli') {
-    $origin = $_ENV['APP_CORS_ORIGIN'] ?? '*';
-    header('Access-Control-Allow-Origin: ' . $origin);
-    $allowedOrigin = 'http://localhost:5173'; // or '*' for dev, but be careful in production
-header('Access-Control-Allow-Origin: ' . $allowedOrigin);
+    // Allowed origins (comma-separated) from env or fallback
+    $envOrigins = $_ENV['APP_CORS_ORIGIN'] ?? 'http://localhost:5173';
+    $allowedOrigins = array_map('trim', explode(',', $envOrigins));
+
+    $requestOrigin = $_SERVER['HTTP_ORIGIN'] ?? '';
+
+    // Decide Access-Control-Allow-Origin value
+    if ($requestOrigin && in_array($requestOrigin, $allowedOrigins, true)) {
+        $allowOriginHeader = $requestOrigin;
+        $allowCredentials = true;
+    } elseif (in_array('*', $allowedOrigins, true)) {
+        $allowOriginHeader = '*';
+        $allowCredentials = false;
+    } else {
+        $allowOriginHeader = $allowedOrigins[0] ?? 'http://localhost:5173';
+        $allowCredentials = true;
+    }
+
+    header('Access-Control-Allow-Origin: ' . $allowOriginHeader);
+
+    if ($allowCredentials && $allowOriginHeader !== '*') {
+        header('Access-Control-Allow-Credentials: true');
+    }
+
     header('Access-Control-Allow-Methods: GET, POST, PUT, PATCH, DELETE, OPTIONS');
-    header('Access-Control-Allow-Headers: Authorization, Content-Type, Accept');
-    header('Access-Control-Allow-Credentials: true');
+    // IMPORTANT: include X-HTTP-Method-Override and other custom headers here
+    header('Access-Control-Allow-Headers: Authorization, Content-Type, Accept, X-Requested-With, X-HTTP-Method-Override, Origin');
+
+    header('Access-Control-Expose-Headers: Content-Length, X-Requested-With');
+
+    // Preflight short-circuit
+    if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
+        http_response_code(204);
+        exit(0);
+    }
+
+    // ---- Method override support ----
+    // If client used X-HTTP-Method-Override header, convert it into the REQUEST_METHOD used by router.
+    // This must run BEFORE your routing logic, so controllers see the effective method.
+    $override = null;
+    if (!empty($_SERVER['HTTP_X_HTTP_METHOD_OVERRIDE'])) {
+        $override = $_SERVER['HTTP_X_HTTP_METHOD_OVERRIDE'];
+    } elseif (!empty($_POST['_method'])) {
+        // When PHP parsed a multipart/form-data POST, $_POST is available here.
+        $override = $_POST['_method'];
+    }
+
+    if ($override) {
+        $override = strtoupper(trim($override));
+        // Allow only expected override verbs
+        $allowed = ['PUT', 'PATCH', 'DELETE'];
+        if (in_array($override, $allowed, true)) {
+            // set for router to see
+            $_SERVER['REQUEST_METHOD'] = $override;
+        }
+    }
 }
 
 // handle preflight
@@ -160,7 +209,9 @@ $router->get('/api/v1/locations', 'App\Controllers\LocationsController@index');
 $router->post('/api/v1/locations', 'App\Controllers\LocationsController@store');
 $router->get('/api/v1/locations/{id}', 'App\Controllers\LocationsController@show');
 $router->put('/api/v1/locations/{id}', 'App\Controllers\LocationsController@update');
+$router->patch('/api/v1/locations/{id}/status', 'App\Controllers\LocationsController@updateStatus'); // new
 $router->delete('/api/v1/locations/{id}', 'App\Controllers\LocationsController@destroy');
+
 
 /* SOPs & files */
 $router->get('/api/v1/sops', 'App\Controllers\SopsController@index');
@@ -215,16 +266,26 @@ $router->post('/api/v1/raci/roles', 'App\Controllers\RaciRolesController@store')
 $router->delete('/api/v1/raci/roles/{id}', 'App\Controllers\RaciRolesController@destroy');
 
 /* Helpdesk */
-$router->get('/api/v1/helpdesk/requests', 'App\Controllers\HelpdeskRequestsController@index');
-$router->post('/api/v1/helpdesk/requests', 'App\Controllers\HelpdeskRequestsController@store');
-$router->get('/api/v1/helpdesk/requests/{id}', 'App\Controllers\HelpdeskRequestsController@show');
-$router->delete('/api/v1/helpdesk/requests/{id}', 'App\Controllers\HelpdeskRequestsController@destroy');
-
 $router->get('/api/v1/helpdesk/tickets', 'App\Controllers\HelpdeskTicketsController@index');
 $router->post('/api/v1/helpdesk/tickets', 'App\Controllers\HelpdeskTicketsController@store');
 $router->get('/api/v1/helpdesk/tickets/{id}', 'App\Controllers\HelpdeskTicketsController@show');
 $router->put('/api/v1/helpdesk/tickets/{id}', 'App\Controllers\HelpdeskTicketsController@update');
 $router->delete('/api/v1/helpdesk/tickets/{id}', 'App\Controllers\HelpdeskTicketsController@destroy');
+
+// Additional endpoints your frontend components expect:
+$router->get('/api/v1/helpdesk/users', 'App\Controllers\HelpdeskTicketsController@getUsers');
+$router->post('/api/v1/helpdesk/tickets/{id}/trash', 'App\Controllers\HelpdeskTicketsController@moveToTrash');
+
+// Optional admin route to purge trashed older than 30 days (call from cron or admin UI)
+$router->post('/api/v1/helpdesk/purge-trashed', 'App\Controllers\HelpdeskTicketsController@purgeTrashed');
+
+/* Helpdesk Members */
+$router->get('/api/v1/helpdesk/members', 'App\Controllers\HelpdeskMembersController@index');
+$router->post('/api/v1/helpdesk/members', 'App\Controllers\HelpdeskMembersController@store');
+$router->get('/api/v1/helpdesk/members/{id}', 'App\Controllers\HelpdeskMembersController@show');
+$router->put('/api/v1/helpdesk/members/{id}', 'App\Controllers\HelpdeskMembersController@update');
+$router->delete('/api/v1/helpdesk/members/{id}', 'App\Controllers\HelpdeskMembersController@destroy');
+
 
 /* Health check */
 $router->get('/', function () {

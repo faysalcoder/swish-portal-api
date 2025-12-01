@@ -36,7 +36,7 @@ class UserValidator extends BaseValidator
         // role validation (if provided)
         if (isset($data['role'])) {
             $role = (int)$data['role'];
-            self::assert(in_array($role, [0,1,2], true), 'role', 'Invalid role value', $errors);
+            self::assert(in_array($role, [0,1,2,3,4], true), 'role', 'Invalid role value', $errors);
         }
 
         // phone optional check length
@@ -62,7 +62,7 @@ class UserValidator extends BaseValidator
 
         if (isset($data['role'])) {
             $role = (int)$data['role'];
-            self::assert(in_array($role, [0,1,2], true), 'role', 'Invalid role', $errors);
+            self::assert(in_array($role, [0,1,2,3,4], true), 'role', 'Invalid role', $errors);
         }
 
         if (isset($data['password'])) {

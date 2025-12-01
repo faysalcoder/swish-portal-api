@@ -7,13 +7,9 @@ use App\Validators\UserValidator;
 
 class UsersController extends BaseController
 {
-    // NOTE: Do NOT redeclare $userModel here — it's defined in BaseController as ?User
-    // The parent constructor already creates $this->userModel = new User();
-
     public function __construct()
     {
         parent::__construct();
-        // parent constructed $this->userModel
     }
 
     /**
@@ -56,6 +52,33 @@ class UsersController extends BaseController
     {
         $data = $this->jsonInput();
         try {
+            // normalize incoming values (prevent empty-string FKs)
+            foreach (['wing_id', 'subw_id', 'location_id'] as $k) {
+                if (isset($data[$k])) {
+                    if ($data[$k] === '' || $data[$k] === null) {
+                        $data[$k] = null;
+                    } else {
+                        $data[$k] = (int)$data[$k];
+                        if ($data[$k] <= 0) $data[$k] = null;
+                    }
+                }
+            }
+
+            // normalize status if present (accept "2" or 2 as blocked)
+            if (isset($data['status'])) {
+                $s = strtolower(trim((string)$data['status']));
+                if (in_array($s, ['active','1','true','yes'], true)) $data['status'] = 'active';
+                elseif (in_array($s, ['deactive','inactive','0','false','no'], true)) $data['status'] = 'deactive';
+                elseif (in_array($s, ['block','blocked','2'], true)) $data['status'] = 'block';
+                else $data['status'] = $s;
+            }
+
+            // ensure role is numeric and within expected range (0..3)
+            if (isset($data['role'])) {
+                $data['role'] = (int)$data['role'];
+                if (!in_array($data['role'], [0,1,2,3,4], true)) $data['role'] = 2;
+            }
+
             // validate (throws ValidationException on failure)
             UserValidator::validateCreate($data);
 
@@ -95,41 +118,44 @@ class UsersController extends BaseController
 
     /**
      * PUT /api/v1/users/{id}
-     *
-     * Supports:
-     *  - JSON body updates (via jsonInput())
-     *  - JSON body containing profile_img_base64 + profile_img_name (decodes and saves file)
-     *  - multipart/form-data file upload (when $_FILES['profile_img'] exists; works with POST multipart or method-override POST)
      */
     public function update($id = null): void
     {
         $id = (int)$id;
         if ($id <= 0) $this->error('Invalid user id', 400);
 
-        // Read JSON input first
-        $data = $this->jsonInput();
-
-        // If JSON is empty and $_POST exists (multipart via POST), merge it
-        if ((empty($data) || !is_array($data)) && !empty($_POST)) {
-            $data = $_POST;
+        // Robust body parsing:
+        // - prefer JSON body (php://input)
+        // - fallback to $_POST when multipart/form-data (possibly with _method override)
+        $raw = @file_get_contents('php://input');
+        $json = null;
+        if ($raw !== false && trim($raw) !== '') {
+            $decoded = json_decode($raw, true);
+            if (json_last_error() === JSON_ERROR_NONE && is_array($decoded)) {
+                $json = $decoded;
+            }
         }
+
+        // Start with JSON body if present, otherwise fallback to $_POST
+        $data = is_array($json) ? $json : (is_array($_POST) ? $_POST : []);
         if (!is_array($data)) $data = [];
+
+        // If client used _method override remove it from data to avoid persisting it
+        if (isset($data['_method'])) unset($data['_method']);
 
         try {
             // --------- 1) Handle base64 payload (JSON upload) ----------
-            // Expect fields: profile_img_base64, profile_img_name
             if (!empty($data['profile_img_base64'])) {
                 $b64 = $data['profile_img_base64'];
                 $originalName = isset($data['profile_img_name']) ? basename($data['profile_img_name']) : null;
 
-                // If data URI (data:<mime>;base64,xxxxx) -> extract mime and base64 part
-                $mime = null;
                 if (preg_match('/^data:(.*?);base64,/', $b64, $m)) {
                     $mime = trim($m[1]);
                     $b64 = substr($b64, strpos($b64, ',') + 1);
+                } else {
+                    $mime = null;
                 }
 
-                // basic sanity
                 $b64 = str_replace(' ', '+', $b64);
                 $decoded = base64_decode($b64, true);
                 if ($decoded === false) {
@@ -137,7 +163,6 @@ class UsersController extends BaseController
                     return;
                 }
 
-                // compute size (bytes)
                 $sizeBytes = strlen($decoded);
                 $maxBytes = 2 * 1024 * 1024;
                 if ($sizeBytes > $maxBytes) {
@@ -145,7 +170,6 @@ class UsersController extends BaseController
                     return;
                 }
 
-                // determine extension from mime or original filename
                 $allowed = ['image/jpeg' => 'jpg', 'image/png' => 'png', 'image/webp' => 'webp'];
                 $ext = null;
                 if ($mime && array_key_exists($mime, $allowed)) {
@@ -154,7 +178,6 @@ class UsersController extends BaseController
                     $pExt = strtolower(pathinfo($originalName, PATHINFO_EXTENSION));
                     if (in_array($pExt, ['jpg', 'jpeg', 'png', 'webp'])) {
                         $ext = $pExt === 'jpeg' ? 'jpg' : $pExt;
-                        // set a mime guess
                         $mime = $mime ?? ($ext === 'jpg' ? 'image/jpeg' : 'image/' . $ext);
                     }
                 }
@@ -164,7 +187,6 @@ class UsersController extends BaseController
                     return;
                 }
 
-                // ensure upload dir exists
                 $uploadDirRelative = '/uploads/profiles/';
                 $uploadDir = rtrim($_SERVER['DOCUMENT_ROOT'], DIRECTORY_SEPARATOR) . $uploadDirRelative;
                 if (!is_dir($uploadDir)) {
@@ -174,25 +196,19 @@ class UsersController extends BaseController
                     }
                 }
 
-                // create filename
                 $filename = 'profile_' . $id . '_' . time() . '.' . $ext;
                 $dest = $uploadDir . $filename;
 
-                // write file
                 if (file_put_contents($dest, $decoded) === false) {
                     $this->error('Failed to save uploaded image', 500);
                     return;
                 }
 
-                // build accessible URL
                 $scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') ? 'https' : 'http';
                 $host = $_SERVER['HTTP_HOST'];
                 $imageUrl = $scheme . '://' . $host . $uploadDirRelative . $filename;
 
-                // populate data so it gets saved to DB
                 $data['profile_img'] = $imageUrl;
-
-                // optionally unset the base64 keys so validator doesn't choke if not expected
                 unset($data['profile_img_base64'], $data['profile_img_name']);
             }
             // --------- 2) Handle regular file upload via $_FILES (multipart/form-data) ----------
@@ -203,7 +219,6 @@ class UsersController extends BaseController
                     return;
                 }
 
-                // validate size
                 $maxBytes = 2 * 1024 * 1024; // 2MB
                 if ($file['size'] > $maxBytes) {
                     $this->error('Image too large (max 2MB)', 422);
@@ -245,7 +260,40 @@ class UsersController extends BaseController
                 $data['profile_img'] = $imageUrl;
             }
 
-            // Validate data (validator should allow optional profile_img)
+            // ---- Normalization: ensure empty FK fields become null, normalize status/role ----
+            foreach (['wing_id', 'subw_id', 'location_id'] as $k) {
+                if (isset($data[$k])) {
+                    if ($data[$k] === '' || $data[$k] === null) {
+                        $data[$k] = null;
+                    } else {
+                        $data[$k] = (int)$data[$k];
+                        if ($data[$k] <= 0) $data[$k] = null;
+                    }
+                }
+            }
+
+            // Normalize status carefully: accept numeric 0/1/2 or strings "0"/"1"/"2"
+            if (isset($data['status'])) {
+                // cast to string then trim/lower
+                $s = strtolower(trim((string)$data['status']));
+                if (in_array($s, ['active','1','true','yes'], true)) {
+                    $data['status'] = 'active';
+                } elseif (in_array($s, ['deactive','inactive','0','false','no'], true)) {
+                    $data['status'] = 'deactive';
+                } elseif (in_array($s, ['block','blocked','2'], true)) {
+                    $data['status'] = 'block';
+                } else {
+                    // keep arbitrary string but trimmed
+                    $data['status'] = $s;
+                }
+            }
+
+            if (isset($data['role'])) {
+                $data['role'] = (int)$data['role'];
+                if (!in_array($data['role'], [0,1,2,3,4], true)) $data['role'] = 2;
+            }
+
+            // Validate data (validator should allow optional profile_img and these statuses/role)
             UserValidator::validateUpdate($data);
 
             // if password present, hash it

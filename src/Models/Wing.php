@@ -22,8 +22,6 @@ class Wing extends BaseModel
      */
     public function deleteById(int $id): bool
     {
-        // If you want to perform cascade cleanup (subwings, users), do it here using a transaction.
-        // For now, simply call BaseModel->delete() which executes a DELETE WHERE id = :id
         try {
             return $this->delete($id);
         } catch (PDOException $e) {
@@ -50,7 +48,6 @@ class Wing extends BaseModel
             $row = $stmt->fetch(PDO::FETCH_ASSOC);
             $counts['subwings'] = (int)($row['cnt'] ?? 0);
         } catch (PDOException $e) {
-            // ignore if table doesn't exist
             $counts['subwings'] = 0;
         }
 
