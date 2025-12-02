@@ -2,6 +2,8 @@
 namespace App\Controllers;
 
 use App\Models\HelpdeskTicket;
+use DateTimeImmutable;
+use DateTimeZone;
 
 class HelpdeskTicketsController extends BaseController
 {
@@ -11,6 +13,15 @@ class HelpdeskTicketsController extends BaseController
     {
         parent::__construct();
         $this->ticketModel = new HelpdeskTicket();
+    }
+
+    /**
+     * Return current datetime in Asia/Dhaka as Y-m-d H:i:s
+     */
+    protected function now(): string
+    {
+        $tz = new DateTimeZone('Asia/Dhaka');
+        return (new DateTimeImmutable('now', $tz))->format('Y-m-d H:i:s');
     }
 
     /**
@@ -29,6 +40,7 @@ class HelpdeskTicketsController extends BaseController
         $filters = [];
         foreach (['assigned_to', 'assigned_by', 'status', 'priority', 'user_id'] as $k) {
             if (isset($params[$k]) && $params[$k] !== '') {
+                // for assigned_to filter, keep as int (filter by primary assigned_to column)
                 $filters[$k] = in_array($k, ['assigned_to', 'assigned_by', 'user_id']) ? (int)$params[$k] : $params[$k];
             }
         }
@@ -75,6 +87,7 @@ class HelpdeskTicketsController extends BaseController
      */
     public function store(): void
     {
+        // $user is the logged-in user; assigned_by will be this user's id
         $user = $this->requireAuth();
 
         $contentType = $_SERVER['CONTENT_TYPE'] ?? '';
@@ -101,22 +114,44 @@ class HelpdeskTicketsController extends BaseController
                 $input['details'] = $input['description'];
             }
 
+            // Normalize assigned_to input:
+            // Accept either single id (int/string), comma separated string, or array of ids
             $assigned_to = null;
-            if (isset($input['assigned_to']) && $input['assigned_to'] !== '') {
-                $assigned_to = (int)$input['assigned_to'];
+            if (isset($input['assigned_to'])) {
+                if (is_array($input['assigned_to'])) {
+                    $assigned_to = array_map('intval', $input['assigned_to']);
+                } elseif (is_string($input['assigned_to'])) {
+                    // accept CSV or single string
+                    $trim = trim($input['assigned_to']);
+                    if ($trim === '') {
+                        $assigned_to = null;
+                    } elseif (strpos($trim, ',') !== false) {
+                        $parts = array_map('trim', explode(',', $trim));
+                        $assigned_to = array_map('intval', $parts);
+                    } else {
+                        $assigned_to = [(int)$trim];
+                    }
+                } else {
+                    // numeric value
+                    $assigned_to = [(int)$input['assigned_to']];
+                }
             }
+
+            $now = $this->now();
 
             $data = [
                 'title' => trim((string)$input['title']),
                 'details' => $input['details'] ?? null,
                 'doc' => $docPath,
                 'request_category' => $input['request_category'] ?? null,
-                'assigned_by' => isset($input['assigned_by']) ? (int)$input['assigned_by'] : null,
-                'assigned_to' => $assigned_to,
+                // assigned_by will always be the logged in user here
+                'assigned_by' => (int)$user['id'],
+                'assigned_to' => $assigned_to, // can be null, array, or single int (model handles it)
                 'status' => $input['status'] ?? 'open',
                 'priority' => $input['priority'] ?? 'medium',
-                'request_time' => $input['request_time'] ?? date('Y-m-d H:i:s'),
-                'last_update_time' => date('Y-m-d H:i:s'),
+                // Use Dhaka-local now if request_time not provided
+                'request_time' => $input['request_time'] ?? $now,
+                'last_update_time' => $now,
                 'resolve_time' => $input['resolve_time'] ?? null,
                 'user_id' => $input['user_id'] ?? $user['id']
             ];
@@ -140,7 +175,8 @@ class HelpdeskTicketsController extends BaseController
      */
     public function update($id): void
     {
-        $this->requireAuth();
+        // requireAuth returns current user; we'll use it to set assigned_by when assignments change
+        $user = $this->requireAuth();
         $id = (int)$id;
         $contentType = $_SERVER['CONTENT_TYPE'] ?? '';
         $input = [];
@@ -162,20 +198,46 @@ class HelpdeskTicketsController extends BaseController
             if (isset($input['subject']) && !isset($input['title'])) $input['title'] = $input['subject'];
             if (isset($input['description']) && !isset($input['details'])) $input['details'] = $input['description'];
 
+            // normalize possible assigned_to / assigned_by / user_id
             foreach (['assigned_to', 'assigned_by', 'user_id'] as $intField) {
                 if (array_key_exists($intField, $input)) {
-                    if ($input[$intField] === '' || $input[$intField] === null) {
-                        $input[$intField] = null;
+                    if ($intField === 'assigned_to') {
+                        // allow array, CSV or single value
+                        if (is_array($input['assigned_to'])) {
+                            $input['assigned_to'] = array_map('intval', $input['assigned_to']);
+                        } elseif (is_string($input['assigned_to'])) {
+                            $trim = trim($input['assigned_to']);
+                            if ($trim === '') {
+                                $input['assigned_to'] = null;
+                            } elseif (strpos($trim, ',') !== false) {
+                                $parts = array_map('trim', explode(',', $trim));
+                                $input['assigned_to'] = array_map('intval', $parts);
+                            } else {
+                                $input['assigned_to'] = [(int)$trim];
+                            }
+                        } else {
+                            $input['assigned_to'] = [(int)$input['assigned_to']];
+                        }
                     } else {
-                        $input[$intField] = (int)$input[$intField];
+                        if ($input[$intField] === '' || $input[$intField] === null) {
+                            $input[$intField] = null;
+                        } else {
+                            $input[$intField] = (int)$input[$intField];
+                        }
                     }
                 }
             }
 
-            $input['last_update_time'] = date('Y-m-d H:i:s');
+            // If the update includes assigned_to, set assigned_by to the current user (who is performing the assignment)
+            if (array_key_exists('assigned_to', $input)) {
+                $input['assigned_by'] = (int)$user['id'];
+            }
+
+            $now = $this->now();
+            $input['last_update_time'] = $now;
 
             if (isset($input['status']) && $input['status'] === 'resolved' && empty($ticket['resolve_time'])) {
-                $input['resolve_time'] = date('Y-m-d H:i:s');
+                $input['resolve_time'] = $now;
             }
 
             // Handle trashed_at field specifically for restore from trash

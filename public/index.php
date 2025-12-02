@@ -7,6 +7,9 @@ require __DIR__ . '/../vendor/autoload.php';
 use App\Router\Router;
 use Dotenv\Dotenv;
 
+// --- Ensure application uses Dhaka timezone for native PHP functions ---
+date_default_timezone_set('Asia/Dhaka'); // <--- important: Dhaka time for date(), time(), etc.
+
 // Load environment variables (safe load)
 $projectRoot = dirname(__DIR__);
 if (file_exists($projectRoot . '/.env')) {
@@ -226,7 +229,7 @@ $router->get('/api/v1/sop-files/{id}', 'App\Controllers\SopFilesController@downl
 $router->delete('/api/v1/sop-files/{id}', 'App\Controllers\SopFilesController@destroy');
 
 /* Rooms & Meetings */
-$router->get('/api/v1/rooms', 'App\Controllers\RoomsController@index');
+$router->get('/api/v1/rooms', 'App.Controllers\RoomsController@index');
 $router->post('/api/v1/rooms', 'App\Controllers\RoomsController@store');
 $router->get('/api/v1/rooms/{id}', 'App\Controllers\RoomsController@show');
 $router->put('/api/v1/rooms/{id}', 'App\Controllers\RoomsController@update');
@@ -234,19 +237,19 @@ $router->delete('/api/v1/rooms/{id}', 'App\Controllers\RoomsController@destroy')
 
 $router->get('/api/v1/meetings', 'App\Controllers\MeetingsController@index');
 $router->post('/api/v1/meetings', 'App\Controllers\MeetingsController@store');
-$router->get('/api/v1/meetings/{id}', 'App\Controllers\MeetingsController@show');
+$router->get('/api/v1/meetings/{id}', 'App.Controllers\MeetingsController@show');
 $router->put('/api/v1/meetings/{id}', 'App\Controllers\MeetingsController@update');
-$router->delete('/api/v1/meetings/{id}', 'App\Controllers\MeetingsController@destroy');
+$router->delete('/api/v1/meetings/{id}', 'App.Controllers\MeetingsController@destroy');
 
 $router->post('/api/v1/meetings/{id}/status', 'App\Controllers\MeetingStatusesController@create');
 $router->get('/api/v1/meetings/{id}/status', 'App\Controllers\MeetingStatusesController@index');
 
 /* Notices & Forms */
 $router->get('/api/v1/notices', 'App\Controllers\NoticesController@index');
-$router->post('/api/v1/notices', 'App\Controllers\NoticesController@store');
+$router->post('/api/v1/notices', 'App.Controllers\NoticesController@store');
 $router->get('/api/v1/notices/{id}', 'App\Controllers\NoticesController@show');
-$router->put('/api/v1/notices/{id}', 'App\Controllers\NoticesController@update');
-$router->delete('/api/v1/notices/{id}', 'App\Controllers\NoticesController@destroy');
+$router->put('/api/v1/notices/{id}', 'App.Controllers\NoticesController@update');
+$router->delete('/api/v1/notices/{id}', 'App.Controllers\NoticesController@destroy');
 
 $router->get('/api/v1/forms', 'App\Controllers\FormsController@index');
 $router->post('/api/v1/forms', 'App\Controllers\FormsController@store');
@@ -262,8 +265,8 @@ $router->put('/api/v1/raci/{id}', 'App\Controllers\RaciMatricesController@update
 $router->delete('/api/v1/raci/{id}', 'App\Controllers\RaciMatricesController@destroy');
 
 $router->get('/api/v1/raci/{id}/roles', 'App\Controllers\RaciRolesController@byRaci');
-$router->post('/api/v1/raci/roles', 'App\Controllers\RaciRolesController@store');
-$router->delete('/api/v1/raci/roles/{id}', 'App\Controllers\RaciRolesController@destroy');
+$router->post('/api/v1/raci/roles', 'App.Controllers\RaciRolesController@store');
+$router->delete('/api/v1/raci/roles/{id}', 'App.Controllers\RaciRolesController@destroy');
 
 /* Helpdesk */
 $router->get('/api/v1/helpdesk/tickets', 'App\Controllers\HelpdeskTicketsController@index');
