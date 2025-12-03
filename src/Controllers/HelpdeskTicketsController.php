@@ -40,7 +40,6 @@ class HelpdeskTicketsController extends BaseController
         $filters = [];
         foreach (['assigned_to', 'assigned_by', 'status', 'priority', 'user_id'] as $k) {
             if (isset($params[$k]) && $params[$k] !== '') {
-                // for assigned_to filter, keep as int (filter by primary assigned_to column)
                 $filters[$k] = in_array($k, ['assigned_to', 'assigned_by', 'user_id']) ? (int)$params[$k] : $params[$k];
             }
         }
@@ -87,7 +86,6 @@ class HelpdeskTicketsController extends BaseController
      */
     public function store(): void
     {
-        // $user is the logged-in user; assigned_by will be this user's id
         $user = $this->requireAuth();
 
         $contentType = $_SERVER['CONTENT_TYPE'] ?? '';
@@ -96,12 +94,19 @@ class HelpdeskTicketsController extends BaseController
 
         try {
             if (strpos($contentType, 'multipart/form-data') !== false) {
+                // For multipart, PHP populates $_POST and $_FILES (only on POST)
                 $input = $_POST;
                 if (!empty($_FILES['doc']) && $_FILES['doc']['error'] === UPLOAD_ERR_OK) {
                     $docPath = $this->handleFileUpload($_FILES['doc']);
                 }
             } else {
                 $input = $this->jsonInput();
+            }
+
+            // If a doc_url field provided and no uploaded file, use it as doc path
+            if (isset($input['doc_url']) && !$docPath) {
+                $trim = trim((string)$input['doc_url']);
+                if ($trim !== '') $docPath = $trim;
             }
 
             if (empty($input['title']) && !empty($input['subject'])) {
@@ -115,25 +120,36 @@ class HelpdeskTicketsController extends BaseController
             }
 
             // Normalize assigned_to input:
-            // Accept either single id (int/string), comma separated string, or array of ids
             $assigned_to = null;
             if (isset($input['assigned_to'])) {
                 if (is_array($input['assigned_to'])) {
-                    $assigned_to = array_map('intval', $input['assigned_to']);
+                    // Filter out empty values and convert to integers
+                    $assigned_to = array_filter(array_map('intval', $input['assigned_to']), function($value) {
+                        return $value > 0;
+                    });
+                    // If array is empty after filtering, set to null
+                    if (empty($assigned_to)) {
+                        $assigned_to = null;
+                    }
                 } elseif (is_string($input['assigned_to'])) {
-                    // accept CSV or single string
                     $trim = trim($input['assigned_to']);
-                    if ($trim === '') {
+                    if ($trim === '' || $trim === 'null' || $trim === 'undefined') {
                         $assigned_to = null;
                     } elseif (strpos($trim, ',') !== false) {
                         $parts = array_map('trim', explode(',', $trim));
-                        $assigned_to = array_map('intval', $parts);
+                        $assigned_to = array_filter(array_map('intval', $parts), function($value) {
+                            return $value > 0;
+                        });
+                        if (empty($assigned_to)) {
+                            $assigned_to = null;
+                        }
                     } else {
-                        $assigned_to = [(int)$trim];
+                        $val = (int)$trim;
+                        $assigned_to = $val > 0 ? [$val] : null;
                     }
                 } else {
-                    // numeric value
-                    $assigned_to = [(int)$input['assigned_to']];
+                    $val = (int)$input['assigned_to'];
+                    $assigned_to = $val > 0 ? [$val] : null;
                 }
             }
 
@@ -142,14 +158,13 @@ class HelpdeskTicketsController extends BaseController
             $data = [
                 'title' => trim((string)$input['title']),
                 'details' => $input['details'] ?? null,
+                // store doc (either uploaded path returned by handleFileUpload OR provided doc_url)
                 'doc' => $docPath,
                 'request_category' => $input['request_category'] ?? null,
-                // assigned_by will always be the logged in user here
                 'assigned_by' => (int)$user['id'],
-                'assigned_to' => $assigned_to, // can be null, array, or single int (model handles it)
+                'assigned_to' => $assigned_to,
                 'status' => $input['status'] ?? 'open',
                 'priority' => $input['priority'] ?? 'medium',
-                // Use Dhaka-local now if request_time not provided
                 'request_time' => $input['request_time'] ?? $now,
                 'last_update_time' => $now,
                 'resolve_time' => $input['resolve_time'] ?? null,
@@ -175,7 +190,6 @@ class HelpdeskTicketsController extends BaseController
      */
     public function update($id): void
     {
-        // requireAuth returns current user; we'll use it to set assigned_by when assignments change
         $user = $this->requireAuth();
         $id = (int)$id;
         $contentType = $_SERVER['CONTENT_TYPE'] ?? '';
@@ -183,6 +197,7 @@ class HelpdeskTicketsController extends BaseController
 
         try {
             if (strpos($contentType, 'multipart/form-data') !== false) {
+                // allow POST-with-_method=PUT to be parsed by PHP as multipart
                 $input = $_POST;
                 if (!empty($_FILES['doc']) && $_FILES['doc']['error'] === UPLOAD_ERR_OK) {
                     $docPath = $this->handleFileUpload($_FILES['doc']);
@@ -198,25 +213,46 @@ class HelpdeskTicketsController extends BaseController
             if (isset($input['subject']) && !isset($input['title'])) $input['title'] = $input['subject'];
             if (isset($input['description']) && !isset($input['details'])) $input['details'] = $input['description'];
 
+            // If doc_url provided (external link) and doc not already set from upload, use it
+            if (isset($input['doc_url']) && !isset($input['doc'])) {
+                $trim = trim((string)$input['doc_url']);
+                if ($trim !== '') {
+                    $input['doc'] = $trim;
+                }
+            }
+
             // normalize possible assigned_to / assigned_by / user_id
             foreach (['assigned_to', 'assigned_by', 'user_id'] as $intField) {
                 if (array_key_exists($intField, $input)) {
                     if ($intField === 'assigned_to') {
-                        // allow array, CSV or single value
                         if (is_array($input['assigned_to'])) {
-                            $input['assigned_to'] = array_map('intval', $input['assigned_to']);
+                            // Filter out empty values and convert to integers
+                            $input['assigned_to'] = array_filter(array_map('intval', $input['assigned_to']), function($value) {
+                                return $value > 0;
+                            });
+                            // If array is empty after filtering, set to null
+                            if (empty($input['assigned_to'])) {
+                                $input['assigned_to'] = null;
+                            }
                         } elseif (is_string($input['assigned_to'])) {
                             $trim = trim($input['assigned_to']);
-                            if ($trim === '') {
+                            if ($trim === '' || $trim === 'null' || $trim === 'undefined') {
                                 $input['assigned_to'] = null;
                             } elseif (strpos($trim, ',') !== false) {
                                 $parts = array_map('trim', explode(',', $trim));
-                                $input['assigned_to'] = array_map('intval', $parts);
+                                $input['assigned_to'] = array_filter(array_map('intval', $parts), function($value) {
+                                    return $value > 0;
+                                });
+                                if (empty($input['assigned_to'])) {
+                                    $input['assigned_to'] = null;
+                                }
                             } else {
-                                $input['assigned_to'] = [(int)$trim];
+                                $val = (int)$trim;
+                                $input['assigned_to'] = $val > 0 ? [$val] : null;
                             }
                         } else {
-                            $input['assigned_to'] = [(int)$input['assigned_to']];
+                            $val = (int)$input['assigned_to'];
+                            $input['assigned_to'] = $val > 0 ? [$val] : null;
                         }
                     } else {
                         if ($input[$intField] === '' || $input[$intField] === null) {
@@ -228,7 +264,7 @@ class HelpdeskTicketsController extends BaseController
                 }
             }
 
-            // If the update includes assigned_to, set assigned_by to the current user (who is performing the assignment)
+            // If the update includes assigned_to, set assigned_by to the current user
             if (array_key_exists('assigned_to', $input)) {
                 $input['assigned_by'] = (int)$user['id'];
             }
@@ -241,12 +277,20 @@ class HelpdeskTicketsController extends BaseController
             }
 
             // Handle trashed_at field specifically for restore from trash
-            if (isset($input['trashed_at']) && $input['trashed_at'] === null) {
+            if (array_key_exists('trashed_at', $input) && $input['trashed_at'] === null) {
                 $input['trashed_at'] = null;
             }
 
-            if (isset($input['doc']) && !empty($ticket['doc']) && file_exists(__DIR__ . '/../../public/' . $ticket['doc'])) {
-                @unlink(__DIR__ . '/../../public/' . $ticket['doc']);
+            // If client provided a new doc (either via upload or doc_url), and ticket has an old local upload, remove it.
+            if (isset($input['doc']) && !empty($ticket['doc'])) {
+                // only unlink if the old doc looks like an internal uploads path (avoid deleting external links)
+                $oldDoc = $ticket['doc'];
+                if (strpos($oldDoc, 'uploads/helpdesk/') === 0) {
+                    $full = __DIR__ . '/../../public/' . $oldDoc;
+                    if (file_exists($full) && is_file($full)) {
+                        @unlink($full);
+                    }
+                }
             }
 
             $ok = $this->ticketModel->update($id, $input);
@@ -341,7 +385,6 @@ class HelpdeskTicketsController extends BaseController
     public function purgeTrashed(): void
     {
         $this->requireAuth();
-        // optional permission checks
         try {
             $deleted = $this->ticketModel->purgeTrashedOlderThanDays(30);
             $this->success(['deleted' => $deleted], 'Purged old trashed tickets');

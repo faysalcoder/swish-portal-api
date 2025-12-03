@@ -297,17 +297,22 @@ class HelpdeskTicket extends BaseModel
     }
 
     /**
-     * Override update to support assigned_to array
+     * Override update to support assigned_to array - FIXED for unassignment
      */
     public function update(int $id, array $data): bool
     {
-        // handle assigned_to array: update primary assigned_to column to first element, and set assignments table
+        // Handle assigned_to array: update primary assigned_to column to first element, and set assignments table
         $assignments = null;
-        if (array_key_exists('assigned_to', $data) && is_array($data['assigned_to'])) {
-            $assignments = $data['assigned_to'];
-            $data['assigned_to'] = count($assignments) ? (int)$assignments[0] : null;
-        } elseif (array_key_exists('assigned_to', $data) && ($data['assigned_to'] === '' || $data['assigned_to'] === null)) {
-            $data['assigned_to'] = null;
+        if (array_key_exists('assigned_to', $data)) {
+            if (is_array($data['assigned_to'])) {
+                // If it's an array (including empty array), process it
+                $assignments = $data['assigned_to'];
+                $data['assigned_to'] = count($assignments) ? (int)$assignments[0] : null;
+            } elseif ($data['assigned_to'] === '' || $data['assigned_to'] === null) {
+                // Explicit unassignment - set to null and assignments to empty array
+                $data['assigned_to'] = null;
+                $assignments = [];
+            }
         }
 
         // ensure updated_at / last_update_time use Dhaka now if not provided
@@ -321,6 +326,7 @@ class HelpdeskTicket extends BaseModel
 
         $ok = parent::update($id, $data);
 
+        // Always call setAssignments when assignments is an array (including empty for unassignment)
         if ($ok && is_array($assignments)) {
             $assignedBy = isset($data['assigned_by']) ? (int)$data['assigned_by'] : null;
             $this->setAssignments($id, $assignments, $assignedBy);
@@ -386,7 +392,7 @@ class HelpdeskTicket extends BaseModel
 
     /**
      * Set assignments for a ticket (replace existing)
-     * $userIds is array of int (user ids)
+     * $userIds is array of int (user ids) - can be empty to unassign all
      */
     public function setAssignments(int $ticketId, array $userIds, ?int $assignedBy = null): bool
     {
@@ -395,11 +401,12 @@ class HelpdeskTicket extends BaseModel
         try {
             $this->db->beginTransaction();
 
-            // delete existing
+            // delete existing assignments
             $stmtDel = $this->db->prepare("DELETE FROM ticket_assignments WHERE ticket_id = :ticket_id");
             $stmtDel->bindValue(':ticket_id', $ticketId, PDO::PARAM_INT);
             $stmtDel->execute();
 
+            // Only insert if there are users to assign
             if (!empty($uids)) {
                 $insSql = "INSERT INTO ticket_assignments (ticket_id, user_id, assigned_by, created_at) VALUES ";
                 $vals = [];
@@ -428,7 +435,7 @@ class HelpdeskTicket extends BaseModel
                 $stmtIns->execute();
             }
 
-            // update primary assigned_to column on helpdesk_tickets to first assigned id (or null)
+            // update primary assigned_to column on helpdesk_tickets to first assigned id (or null if unassigned)
             $primary = !empty($uids) ? (int)$uids[0] : null;
             $stmtUpd = $this->db->prepare("UPDATE `{$this->table}` SET assigned_to = :primary WHERE id = :id");
             if ($primary === null) {

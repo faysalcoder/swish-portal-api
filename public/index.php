@@ -8,7 +8,7 @@ use App\Router\Router;
 use Dotenv\Dotenv;
 
 // --- Ensure application uses Dhaka timezone for native PHP functions ---
-date_default_timezone_set('Asia/Dhaka'); // <--- important: Dhaka time for date(), time(), etc.
+date_default_timezone_set('Asia/Dhaka');
 
 // Load environment variables (safe load)
 $projectRoot = dirname(__DIR__);
@@ -16,7 +16,7 @@ if (file_exists($projectRoot . '/.env')) {
     Dotenv::createImmutable($projectRoot)->safeLoad();
 }
 
-// Determine request early
+// Determine request early (we will refresh $method after potential override)
 $method = $_SERVER['REQUEST_METHOD'] ?? 'GET';
 $uri = parse_url($_SERVER['REQUEST_URI'] ?? '/', PHP_URL_PATH);
 $isApi = (strpos($uri, '/api/') === 0);
@@ -148,11 +148,20 @@ if (php_sapi_name() !== 'cli') {
     // If client used X-HTTP-Method-Override header, convert it into the REQUEST_METHOD used by router.
     // This must run BEFORE your routing logic, so controllers see the effective method.
     $override = null;
+
+    // Header override preferred
     if (!empty($_SERVER['HTTP_X_HTTP_METHOD_OVERRIDE'])) {
         $override = $_SERVER['HTTP_X_HTTP_METHOD_OVERRIDE'];
-    } elseif (!empty($_POST['_method'])) {
-        // When PHP parsed a multipart/form-data POST, $_POST is available here.
+    }
+
+    // If POST with multipart/form-data, PHP has parsed $_POST already, so check body param
+    if (empty($override) && !empty($_POST['_method'])) {
         $override = $_POST['_method'];
+    }
+
+    // Query param fallback (client might send ?_method=PUT)
+    if (empty($override) && isset($_GET['_method'])) {
+        $override = $_GET['_method'];
     }
 
     if ($override) {
@@ -165,6 +174,9 @@ if (php_sapi_name() !== 'cli') {
         }
     }
 }
+
+// Ensure the $method variable reflects any override we just applied
+$method = $_SERVER['REQUEST_METHOD'] ?? $method;
 
 // handle preflight
 if ($method === 'OPTIONS') {
@@ -188,6 +200,7 @@ $router->post('/api/v1/auth/change-password', 'App\Controllers\AuthController@ch
 
 /* Users */
 $router->get('/api/v1/users', 'App\Controllers\UsersController@index');
+$router->post('/api/v1/users', 'App.Controllers\UsersController@store'); // keep as-is if intentional fallback
 $router->post('/api/v1/users', 'App\Controllers\UsersController@store');
 $router->get('/api/v1/users/{id}', 'App\Controllers\UsersController@show');
 $router->put('/api/v1/users/{id}', 'App\Controllers\UsersController@update');
@@ -229,7 +242,7 @@ $router->get('/api/v1/sop-files/{id}', 'App\Controllers\SopFilesController@downl
 $router->delete('/api/v1/sop-files/{id}', 'App\Controllers\SopFilesController@destroy');
 
 /* Rooms & Meetings */
-$router->get('/api/v1/rooms', 'App.Controllers\RoomsController@index');
+$router->get('/api/v1/rooms', 'App\Controllers\RoomsController@index');
 $router->post('/api/v1/rooms', 'App\Controllers\RoomsController@store');
 $router->get('/api/v1/rooms/{id}', 'App\Controllers\RoomsController@show');
 $router->put('/api/v1/rooms/{id}', 'App\Controllers\RoomsController@update');
@@ -237,19 +250,19 @@ $router->delete('/api/v1/rooms/{id}', 'App\Controllers\RoomsController@destroy')
 
 $router->get('/api/v1/meetings', 'App\Controllers\MeetingsController@index');
 $router->post('/api/v1/meetings', 'App\Controllers\MeetingsController@store');
-$router->get('/api/v1/meetings/{id}', 'App.Controllers\MeetingsController@show');
+$router->get('/api/v1/meetings/{id}', 'App\Controllers\MeetingsController@show');
 $router->put('/api/v1/meetings/{id}', 'App\Controllers\MeetingsController@update');
-$router->delete('/api/v1/meetings/{id}', 'App.Controllers\MeetingsController@destroy');
+$router->delete('/api/v1/meetings/{id}', 'App\Controllers\MeetingsController@destroy');
 
 $router->post('/api/v1/meetings/{id}/status', 'App\Controllers\MeetingStatusesController@create');
 $router->get('/api/v1/meetings/{id}/status', 'App\Controllers\MeetingStatusesController@index');
 
 /* Notices & Forms */
 $router->get('/api/v1/notices', 'App\Controllers\NoticesController@index');
-$router->post('/api/v1/notices', 'App.Controllers\NoticesController@store');
+$router->post('/api/v1/notices', 'App\Controllers\NoticesController@store');
 $router->get('/api/v1/notices/{id}', 'App\Controllers\NoticesController@show');
-$router->put('/api/v1/notices/{id}', 'App.Controllers\NoticesController@update');
-$router->delete('/api/v1/notices/{id}', 'App.Controllers\NoticesController@destroy');
+$router->put('/api/v1/notices/{id}', 'App\Controllers\NoticesController@update');
+$router->delete('/api/v1/notices/{id}', 'App\Controllers\NoticesController@destroy');
 
 $router->get('/api/v1/forms', 'App\Controllers\FormsController@index');
 $router->post('/api/v1/forms', 'App\Controllers\FormsController@store');
@@ -265,8 +278,8 @@ $router->put('/api/v1/raci/{id}', 'App\Controllers\RaciMatricesController@update
 $router->delete('/api/v1/raci/{id}', 'App\Controllers\RaciMatricesController@destroy');
 
 $router->get('/api/v1/raci/{id}/roles', 'App\Controllers\RaciRolesController@byRaci');
-$router->post('/api/v1/raci/roles', 'App.Controllers\RaciRolesController@store');
-$router->delete('/api/v1/raci/roles/{id}', 'App.Controllers\RaciRolesController@destroy');
+$router->post('/api/v1/raci/roles', 'App\Controllers\RaciRolesController@store');
+$router->delete('/api/v1/raci/roles/{id}', 'App\Controllers\RaciRolesController@destroy');
 
 /* Helpdesk */
 $router->get('/api/v1/helpdesk/tickets', 'App\Controllers\HelpdeskTicketsController@index');
@@ -289,7 +302,6 @@ $router->get('/api/v1/helpdesk/members/{id}', 'App\Controllers\HelpdeskMembersCo
 $router->put('/api/v1/helpdesk/members/{id}', 'App\Controllers\HelpdeskMembersController@update');
 $router->delete('/api/v1/helpdesk/members/{id}', 'App\Controllers\HelpdeskMembersController@destroy');
 
-
 /* Health check */
 $router->get('/', function () {
     header('Content-Type: application/json; charset=utf-8');
@@ -304,12 +316,10 @@ try {
     // If route produced output (HTML or JSON), send it as-is.
     echo $output;
 } catch (Throwable $e) {
-    // Exception handler will handle, but as a fallback:
     error_log('Dispatch error: ' . $e->getMessage());
     if ($isApi && !headers_sent()) {
         sendJson(['success' => false, 'message' => 'Server error', 'error' => $e->getMessage()], 500);
     } else {
-        // Non-API fallback
         if (!headers_sent()) {
             http_response_code(500);
             header('Content-Type: text/html; charset=utf-8');
