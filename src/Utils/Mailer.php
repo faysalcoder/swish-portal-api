@@ -17,49 +17,80 @@ class Mailer
 
     public function __construct()
     {
-        // load env (BaseController likely does this early, but safe here)
         $root = __DIR__ . '/../../';
         if (file_exists($root . '.env')) {
-            \Dotenv\Dotenv::createImmutable($root)->load();
+            \Dotenv\Dotenv::createImmutable($root)->safeLoad();
         }
 
         $this->host = $_ENV['MAIL_HOST'] ?? '';
         $this->port = (int)($_ENV['MAIL_PORT'] ?? 587);
         $this->username = $_ENV['MAIL_USERNAME'] ?? '';
         $this->password = $_ENV['MAIL_PASSWORD'] ?? '';
-        $this->encryption = $_ENV['MAIL_ENCRYPTION'] ?? 'tls';
+        $this->encryption = strtolower($_ENV['MAIL_ENCRYPTION'] ?? 'tls');
         $this->fromAddress = $_ENV['MAIL_FROM_ADDRESS'] ?? 'no-reply@example.com';
         $this->fromName = $_ENV['MAIL_FROM_NAME'] ?? 'App';
     }
 
     /**
-     * Send a simple HTML email.
-     * @param string $to
+     * Send email to one or many recipients with optional attachments.
+     *
+     * @param string|array $to Single email or array of emails (strings)
      * @param string $subject
      * @param string $htmlBody
      * @param string|null $altBody
+     * @param array $attachments Each item: ['path' => '/abs/path/to/file', 'name' => 'filename.ext']
      * @return bool
      * @throws Exception
      */
-    public function send(string $to, string $subject, string $htmlBody, ?string $altBody = null): bool
+    public function send($to, string $subject, string $htmlBody, ?string $altBody = null, array $attachments = []): bool
     {
         $mail = new PHPMailer(true);
 
         try {
-            // Server settings
             $mail->isSMTP();
             $mail->Host = $this->host;
             $mail->SMTPAuth = true;
             $mail->Username = $this->username;
             $mail->Password = $this->password;
-            $mail->SMTPSecure = $this->encryption ?: PHPMailer::ENCRYPTION_STARTTLS;
+
+            // Map common terms to PHPMailer constants
+            if ($this->encryption === 'ssl') {
+                $mail->SMTPSecure = PHPMailer::ENCRYPTION_SMTPS;
+            } elseif ($this->encryption === 'tls') {
+                $mail->SMTPSecure = PHPMailer::ENCRYPTION_STARTTLS;
+            } else {
+                // Default fallback
+                $mail->SMTPSecure = $this->encryption ?: PHPMailer::ENCRYPTION_STARTTLS;
+            }
+
             $mail->Port = $this->port;
 
             // From
             $mail->setFrom($this->fromAddress, $this->fromName);
 
-            // Recipient
-            $mail->addAddress($to);
+            // Recipients
+            if (is_array($to)) {
+                foreach ($to as $recipient) {
+                    // if recipient is array with keys [email, name]
+                    if (is_array($recipient) && isset($recipient['email'])) {
+                        $name = $recipient['name'] ?? '';
+                        $mail->addAddress($recipient['email'], $name);
+                    } else {
+                        $mail->addAddress((string)$recipient);
+                    }
+                }
+            } else {
+                $mail->addAddress((string)$to);
+            }
+
+            // Attachments
+            foreach ($attachments as $att) {
+                if (!empty($att['path']) && file_exists($att['path'])) {
+                    // 'name' optional
+                    $name = $att['name'] ?? null;
+                    $mail->addAttachment($att['path'], $name);
+                }
+            }
 
             // Content
             $mail->isHTML(true);
@@ -69,8 +100,8 @@ class Mailer
 
             return $mail->send();
         } catch (Exception $e) {
-            // throw up so caller can log / handle
-            throw new Exception('Mail error: ' . $mail->ErrorInfo);
+            // Re-throw with PHPMailer's error info for caller logging
+            throw new Exception('Mail error: ' . $mail->ErrorInfo . ' - ' . $e->getMessage());
         }
     }
 }

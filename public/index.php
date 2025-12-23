@@ -302,6 +302,17 @@ $router->get('/api/v1/helpdesk/members/{id}', 'App\Controllers\HelpdeskMembersCo
 $router->put('/api/v1/helpdesk/members/{id}', 'App\Controllers\HelpdeskMembersController@update');
 $router->delete('/api/v1/helpdesk/members/{id}', 'App\Controllers\HelpdeskMembersController@destroy');
 
+// Email Management Routes
+$router->get('/api/v1/emails', 'App\Controllers\EmailsController@index');
+$router->post('/api/v1/emails', 'App\Controllers\EmailsController@store');
+$router->get('/api/v1/emails/{id}', 'App\Controllers\EmailsController@show');
+$router->delete('/api/v1/emails/{id}', 'App\Controllers\EmailsController@destroy');
+$router->delete('/api/v1/emails/bulk', 'App\Controllers\EmailsController@bulkDestroy');
+$router->put('/api/v1/emails/bulk-mark-sent', 'App\Controllers\EmailsController@bulkMarkSent');
+$router->get('/api/v1/emails/stats', 'App\Controllers\EmailsController@stats');
+$router->get('/api/v1/emails/report', 'App\Controllers\EmailsController@report');
+$router->get('/api/v1/emails/attachments/{id}', 'App\Controllers\EmailsController@downloadAttachment');
+
 /* Health check */
 $router->get('/', function () {
     header('Content-Type: application/json; charset=utf-8');

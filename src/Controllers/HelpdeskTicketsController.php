@@ -9,6 +9,45 @@ class HelpdeskTicketsController extends BaseController
 {
     protected HelpdeskTicket $ticketModel;
 
+    // Allowed mime -> extension map (broad set)
+    protected array $allowedMime = [
+        // images
+        'image/jpeg' => 'jpg',
+        'image/jpg'  => 'jpg',
+        'image/png'  => 'png',
+        'image/gif'  => 'gif',
+        'image/webp' => 'webp',
+        'image/svg+xml' => 'svg',
+        'image/x-icon' => 'ico',
+        'image/vnd.microsoft.icon' => 'ico',
+        // documents
+        'application/pdf' => 'pdf',
+        'application/msword' => 'doc',
+        'application/vnd.openxmlformats-officedocument.wordprocessingml.document' => 'docx',
+        'application/vnd.ms-excel' => 'xls',
+        'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' => 'xlsx',
+        'text/csv' => 'csv',
+        'text/plain' => 'txt',
+        // archives
+        'application/zip' => 'zip',
+        'application/x-rar-compressed' => 'rar',
+        'application/x-7z-compressed' => '7z',
+        // presentations
+        'application/vnd.ms-powerpoint' => 'ppt',
+        'application/vnd.openxmlformats-officedocument.presentationml.presentation' => 'pptx',
+        // audio / video
+        'audio/mpeg' => 'mp3',
+        'audio/mp4' => 'm4a',
+        'video/mp4' => 'mp4',
+        'video/x-msvideo' => 'avi',
+        'video/x-matroska' => 'mkv',
+        // fallback octet-stream permitted only if extension present on filename
+        'application/octet-stream' => null,
+    ];
+
+    protected int $maxFileSize = 20 * 1024 * 1024; // 20 MB
+    protected string $uploadRelativeDir = 'uploads/helpdesk';
+
     public function __construct()
     {
         parent::__construct();
@@ -88,16 +127,18 @@ class HelpdeskTicketsController extends BaseController
     {
         $user = $this->requireAuth();
 
-        $contentType = $_SERVER['CONTENT_TYPE'] ?? '';
+        $contentType = $_SERVER['CONTENT_TYPE'] ?? $_SERVER['HTTP_CONTENT_TYPE'] ?? '';
         $input = [];
         $docPath = null;
 
         try {
-            if (strpos($contentType, 'multipart/form-data') !== false) {
+            if (strpos(strtolower($contentType), 'multipart/form-data') !== false) {
                 // For multipart, PHP populates $_POST and $_FILES (only on POST)
                 $input = $_POST;
-                if (!empty($_FILES['doc']) && $_FILES['doc']['error'] === UPLOAD_ERR_OK) {
+                if (!empty($_FILES['doc']) && isset($_FILES['doc']['error']) && $_FILES['doc']['error'] === UPLOAD_ERR_OK) {
                     $docPath = $this->handleFileUpload($_FILES['doc']);
+                } elseif (!empty($_FILES['doc']) && isset($_FILES['doc']['error'])) {
+                    error_log('Upload failed with error code: ' . $_FILES['doc']['error']);
                 }
             } else {
                 $input = $this->jsonInput();
@@ -192,16 +233,18 @@ class HelpdeskTicketsController extends BaseController
     {
         $user = $this->requireAuth();
         $id = (int)$id;
-        $contentType = $_SERVER['CONTENT_TYPE'] ?? '';
+        $contentType = $_SERVER['CONTENT_TYPE'] ?? $_SERVER['HTTP_CONTENT_TYPE'] ?? '';
         $input = [];
 
         try {
-            if (strpos($contentType, 'multipart/form-data') !== false) {
+            if (strpos(strtolower($contentType), 'multipart/form-data') !== false) {
                 // allow POST-with-_method=PUT to be parsed by PHP as multipart
                 $input = $_POST;
-                if (!empty($_FILES['doc']) && $_FILES['doc']['error'] === UPLOAD_ERR_OK) {
+                if (!empty($_FILES['doc']) && isset($_FILES['doc']['error']) && $_FILES['doc']['error'] === UPLOAD_ERR_OK) {
                     $docPath = $this->handleFileUpload($_FILES['doc']);
                     if ($docPath) $input['doc'] = $docPath;
+                } elseif (!empty($_FILES['doc']) && isset($_FILES['doc']['error'])) {
+                    error_log('Upload failed with error code (update): ' . $_FILES['doc']['error']);
                 }
             } else {
                 $input = $this->jsonInput();
@@ -285,8 +328,9 @@ class HelpdeskTicketsController extends BaseController
             if (isset($input['doc']) && !empty($ticket['doc'])) {
                 // only unlink if the old doc looks like an internal uploads path (avoid deleting external links)
                 $oldDoc = $ticket['doc'];
-                if (strpos($oldDoc, 'uploads/helpdesk/') === 0) {
-                    $full = __DIR__ . '/../../public/' . $oldDoc;
+                if (strpos($oldDoc, trim($this->uploadRelativeDir, '/') . '/') === 0 || strpos($oldDoc, 'uploads/helpdesk/') === 0) {
+                    // compute full path using upload dir
+                    $full = rtrim($this->getUploadFullPath(), DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR . basename($oldDoc);
                     if (file_exists($full) && is_file($full)) {
                         @unlink($full);
                     }
@@ -395,49 +439,132 @@ class HelpdeskTicketsController extends BaseController
     }
 
     /**
-     * Handle file upload (store in public/uploads/helpdesk)
+     * Handle file upload (store in public_html/uploads/helpdesk)
+     * Returns relative path (uploads/helpdesk/filename) on success or null on failure.
      */
     private function handleFileUpload(array $file): ?string
     {
-        $uploadDir = __DIR__ . '/../../public/uploads/helpdesk/';
-        $publicPathPrefix = 'uploads/helpdesk/';
+        // Build upload dir preferring DOCUMENT_ROOT (public_html)
+        $docRoot = $_SERVER['DOCUMENT_ROOT'] ?? '';
+        if (!empty($docRoot)) {
+            $uploadDir = rtrim(realpath($docRoot), DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR . 'uploads' . DIRECTORY_SEPARATOR . 'helpdesk' . DIRECTORY_SEPARATOR;
+            $publicPathPrefix = 'uploads/helpdesk/';
+        } else {
+            // fallback to project root + public_html/uploads/helpdesk
+            $projectRoot = realpath(dirname(__DIR__, 2));
+            $uploadDir = $projectRoot . DIRECTORY_SEPARATOR . 'public_html' . DIRECTORY_SEPARATOR . 'uploads' . DIRECTORY_SEPARATOR . 'helpdesk' . DIRECTORY_SEPARATOR;
+            $publicPathPrefix = 'uploads/helpdesk/';
+        }
 
+        if (!isset($file['error']) || $file['error'] !== UPLOAD_ERR_OK) {
+            error_log('File upload error code: ' . ($file['error'] ?? 'n/a'));
+            return null;
+        }
+
+        if (!isset($file['tmp_name']) || $file['tmp_name'] === '') {
+            error_log('No tmp_name for uploaded file');
+            return null;
+        }
+
+        if (!is_uploaded_file($file['tmp_name'])) {
+            // log and continue to try (some hosts behave differently)
+            error_log('Uploaded file not recognized as HTTP upload: ' . $file['tmp_name']);
+        }
+
+        if (!isset($file['size']) || (int)$file['size'] > $this->maxFileSize) {
+            error_log('Uploaded file too large: ' . ($file['size'] ?? 'n/a'));
+            return null;
+        }
+
+        // Ensure upload dir exists
         if (!is_dir($uploadDir)) {
-            mkdir($uploadDir, 0777, true);
+            if (!@mkdir($uploadDir, 0755, true)) {
+                error_log('Failed to create upload directory: ' . $uploadDir);
+                return null;
+            }
         }
 
-        $allowedMime = [
-            'image/jpeg',
-            'image/png',
-            'image/gif',
-            'application/pdf',
-            'application/msword',
-            'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
-        ];
-        $maxSize = 5 * 1024 * 1024;
-
-        if ($file['error'] !== UPLOAD_ERR_OK) {
-            error_log('File upload error: ' . $file['error']);
-            return null;
-        }
-        if ($file['size'] > $maxSize) {
-            error_log('File too large: ' . $file['size']);
-            return null;
-        }
-        if (!in_array($file['type'], $allowedMime)) {
-            error_log('File type not allowed: ' . $file['type']);
+        // Use finfo to detect mime type
+        $finfo = new \finfo(FILEINFO_MIME_TYPE);
+        $detected = $finfo->file($file['tmp_name']);
+        if ($detected === false) {
+            error_log('finfo failed to detect mime-type for ' . $file['tmp_name']);
             return null;
         }
 
-        $extension = pathinfo($file['name'], PATHINFO_EXTENSION);
-        $filename = uniqid('hd_') . '.' . $extension;
-        $filepath = $uploadDir . $filename;
-
-        if (move_uploaded_file($file['tmp_name'], $filepath)) {
-            return $publicPathPrefix . $filename;
+        $ext = null;
+        if (isset($this->allowedMime[$detected]) && $this->allowedMime[$detected] !== null) {
+            $ext = $this->allowedMime[$detected];
+        } elseif ($detected === 'application/octet-stream') {
+            // fallback: get extension from original filename
+            $origExt = pathinfo($file['name'], PATHINFO_EXTENSION);
+            $origExt = preg_replace('/[^a-z0-9]+/i', '', $origExt);
+            if ($origExt !== '') {
+                $ext = strtolower($origExt);
+            } else {
+                $ext = null;
+            }
+        } else {
+            error_log('File type not allowed: ' . $detected . ' (reported: ' . ($file['type'] ?? 'n/a') . ')');
+            return null;
         }
 
-        error_log('Failed to move uploaded file');
-        return null;
+        if (empty($ext)) {
+            error_log('Could not determine file extension for mime: ' . $detected);
+            return null;
+        }
+
+        // generate safe unique filename
+        try {
+            $filename = uniqid('hd_', true) . '.' . $ext;
+        } catch (\Throwable $e) {
+            $filename = uniqid('hd_') . '.' . $ext;
+        }
+
+        $destination = $uploadDir . $filename;
+
+        // move file into place
+        if (@move_uploaded_file($file['tmp_name'], $destination) === false) {
+            // try rename as fallback on some hosts
+            if (!@rename($file['tmp_name'], $destination)) {
+                error_log('Failed to move uploaded file to destination: ' . $destination . ' tmp: ' . $file['tmp_name']);
+                return null;
+            }
+        }
+
+        @chmod($destination, 0644);
+
+        return $publicPathPrefix . $filename;
+    }
+
+    /**
+     * Compute the full filesystem path to uploads/helpdesk directory (prefers public_html under DOCUMENT_ROOT).
+     */
+    protected function getUploadFullPath(): string
+    {
+        $docRoot = $_SERVER['DOCUMENT_ROOT'] ?? '';
+        if (!empty($docRoot)) {
+            $real = realpath($docRoot);
+            if ($real !== false) {
+                return rtrim($real, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR . 'uploads' . DIRECTORY_SEPARATOR . 'helpdesk';
+            }
+        }
+
+        $projectRoot = realpath(dirname(__DIR__, 2));
+        if ($projectRoot !== false) {
+            // check public_html candidate
+            $cand = $projectRoot . DIRECTORY_SEPARATOR . 'public_html' . DIRECTORY_SEPARATOR . 'uploads' . DIRECTORY_SEPARATOR . 'helpdesk';
+            if (is_dir($cand) || @mkdir($cand, 0755, true)) {
+                return rtrim($cand, DIRECTORY_SEPARATOR);
+            }
+            // fallback to projectRoot/uploads/helpdesk
+            $cand2 = $projectRoot . DIRECTORY_SEPARATOR . 'uploads' . DIRECTORY_SEPARATOR . 'helpdesk';
+            if (is_dir($cand2) || @mkdir($cand2, 0755, true)) {
+                return rtrim($cand2, DIRECTORY_SEPARATOR);
+            }
+        }
+
+        // last fallback: relative to this file
+        return rtrim(__DIR__, DIRECTORY_SEPARATOR) . DIRECTORY_SEPARATOR . trim($this->uploadRelativeDir, '/');
     }
 }
