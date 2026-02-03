@@ -19,8 +19,79 @@ class NoticesController extends BaseController
     }
 
     /**
+     * Resolve public root directory used for filesystem operations.
+     * Priority:
+     *  1. $_SERVER['DOCUMENT_ROOT'] if set and valid
+     *  2. common candidates: public, public_html, parent public
+     *  3. fallback to relative path
+     */
+    private function getPublicRoot(): string
+    {
+        // 1) DOCUMENT_ROOT (most reliable on shared hosts)
+        if (!empty($_SERVER['DOCUMENT_ROOT'])) {
+            $doc = realpath(rtrim($_SERVER['DOCUMENT_ROOT'], '/\\'));
+            if ($doc !== false && is_dir($doc)) {
+                return rtrim($doc, '/');
+            }
+        }
+
+        // 2) common candidate directories relative to this file
+        $candidates = [
+            __DIR__ . '/../../public',
+            __DIR__ . '/../../public_html',
+            __DIR__ . '/../../../public',
+            __DIR__ . '/../../../public_html',
+        ];
+
+        foreach ($candidates as $cand) {
+            $real = realpath($cand);
+            if ($real !== false && is_dir($real)) {
+                return rtrim($real, '/');
+            }
+        }
+
+        // 3) last resort: return the default relative path (might be wrong)
+        return rtrim(__DIR__ . '/../../public', '/');
+    }
+
+    /**
+     * Build web-relative file url (what will be stored in DB): '/uploads/notices/<filename>'
+     */
+    private function buildWebFileUrl(string $filename): string
+    {
+        return '/uploads/notices/' . ltrim($filename, '/');
+    }
+
+    /**
+     * Resolve a filesystem path from a stored file_url.
+     */
+    private function resolveFilesystemPathFromFileUrl(?string $fileUrl): ?string
+    {
+        if (empty($fileUrl)) return null;
+
+        // Web-relative uploaded path
+        if (str_starts_with($fileUrl, '/uploads/notices/')) {
+            $publicRoot = $this->getPublicRoot();
+            return $publicRoot . $fileUrl;
+        }
+
+        // Absolute unix path
+        if (DIRECTORY_SEPARATOR === '/' && str_starts_with($fileUrl, '/')) {
+            return $fileUrl;
+        }
+
+        // Windows absolute path
+        if (DIRECTORY_SEPARATOR === '\\' && preg_match('#^[A-Za-z]:\\\\#', $fileUrl)) {
+            return $fileUrl;
+        }
+
+        // Fallback: treat as relative to public root
+        $publicRoot = $this->getPublicRoot();
+        return $publicRoot . '/' . ltrim($fileUrl, '/');
+    }
+
+    /**
      * GET /api/v1/notices
-     * Return ALL active notices (no pagination). Unknown query params are ignored.
      */
     public function index(): void
     {
@@ -54,7 +125,6 @@ class NoticesController extends BaseController
 
     /**
      * POST /api/v1/notices
-     * Accepts multipart (file upload) OR JSON body with file_url for external URL notices.
      */
     public function store(): void
     {
@@ -109,22 +179,50 @@ class NoticesController extends BaseController
                     $this->error('Invalid file extension', 422);
                 }
 
-                // Prepare upload directory
-                $publicRoot = realpath(__DIR__ . '/../../public') ?: (__DIR__ . '/../../public');
+                // Prepare upload directory (filesystem)
+                $publicRoot = $this->getPublicRoot();
                 $uploadDir = rtrim($publicRoot, '/') . '/uploads/notices/';
                 if (!is_dir($uploadDir)) {
-                    mkdir($uploadDir, 0777, true);
+                    if (!mkdir($uploadDir, 0777, true) && !is_dir($uploadDir)) {
+                        $this->error('Failed to create upload directory', 500);
+                    }
                 }
 
                 // Generate safe filename
                 $filename = time() . '_' . bin2hex(random_bytes(6)) . '.' . $fileExt;
                 $targetFile = $uploadDir . $filename;
 
-                if (!move_uploaded_file($_FILES['file']['tmp_name'], $targetFile)) {
+                // Try moving uploaded file to the intended target
+                $moved = false;
+                if (@move_uploaded_file($_FILES['file']['tmp_name'], $targetFile)) {
+                    $moved = true;
+                } else {
+                    // Fallback: try copy
+                    if (@copy($_FILES['file']['tmp_name'], $targetFile)) {
+                        $moved = true;
+                    }
+                }
+
+                // Extra safety: some hosts may move to public root accidentally.
+                // If we didn't find the file at target but found it at publicRoot/<filename>, move it
+                if (!$moved) {
+                    $altLocation = $publicRoot . '/' . $filename;
+                    if (file_exists($altLocation)) {
+                        if (@rename($altLocation, $targetFile)) {
+                            $moved = true;
+                        }
+                    }
+                }
+
+                if (!$moved || !file_exists($targetFile)) {
                     $this->error('File upload failed', 500);
                 }
 
-                $fileUrl = '/uploads/notices/' . $filename;
+                // Ensure correct permissions (optional; adjust as needed)
+                @chmod($targetFile, 0644);
+
+                // Always store web-relative URL in DB
+                $fileUrl = $this->buildWebFileUrl($filename);
                 $data['notice_type'] = 'file';
             }
             // Handle external URL if provided
@@ -155,7 +253,6 @@ class NoticesController extends BaseController
 
     /**
      * PUT /api/v1/notices/{id}
-     * Also supports POST + _method=PUT when using multipart/form-data for file uploads.
      */
     public function update($id): void
     {
@@ -205,26 +302,51 @@ class NoticesController extends BaseController
                     $this->error('Invalid file extension', 422);
                 }
 
-                $publicRoot = realpath(__DIR__ . '/../../public') ?: (__DIR__ . '/../../public');
+                $publicRoot = $this->getPublicRoot();
                 $uploadDir = rtrim($publicRoot, '/') . '/uploads/notices/';
-                if (!is_dir($uploadDir)) mkdir($uploadDir, 0777, true);
+                if (!is_dir($uploadDir)) {
+                    if (!mkdir($uploadDir, 0777, true) && !is_dir($uploadDir)) {
+                        $this->error('Failed to create upload directory', 500);
+                    }
+                }
 
-                // Delete old local file if present
-                if (!empty($row['file_url']) && str_starts_with($row['file_url'], '/uploads/notices/')) {
-                    $oldPath = $publicRoot . $row['file_url'];
+                // Delete old local file if present (supports both web-relative and absolute paths)
+                if (!empty($row['file_url'])) {
+                    $oldPath = $this->resolveFilesystemPathFromFileUrl($row['file_url']);
                     if ($oldPath && file_exists($oldPath)) {
                         @unlink($oldPath);
                     }
                 }
 
+                // Generate safe filename and target
                 $filename = time() . '_' . bin2hex(random_bytes(6)) . '.' . $fileExt;
                 $targetFile = $uploadDir . $filename;
 
-                if (!move_uploaded_file($_FILES['file']['tmp_name'], $targetFile)) {
+                $moved = false;
+                if (@move_uploaded_file($_FILES['file']['tmp_name'], $targetFile)) {
+                    $moved = true;
+                } else {
+                    if (@copy($_FILES['file']['tmp_name'], $targetFile)) {
+                        $moved = true;
+                    }
+                }
+
+                // Extra safety fallback: if file ended up in public root with same filename, move it
+                if (!$moved) {
+                    $altLocation = $publicRoot . '/' . $filename;
+                    if (file_exists($altLocation)) {
+                        if (@rename($altLocation, $targetFile)) $moved = true;
+                    }
+                }
+
+                if (!$moved || !file_exists($targetFile)) {
                     $this->error('File upload failed', 500);
                 }
 
-                $fileUrl = '/uploads/notices/' . $filename;
+                @chmod($targetFile, 0644);
+
+                // Always save web-relative URL to DB
+                $fileUrl = $this->buildWebFileUrl($filename);
                 $data['notice_type'] = 'file';
             }
             // If client explicitly provided file_url in payload (update or clear)
@@ -237,9 +359,8 @@ class NoticesController extends BaseController
                     $data['notice_type'] = 'url';
                 } else {
                     // clear file_url: delete old local file if existed
-                    if (!empty($row['file_url']) && str_starts_with($row['file_url'], '/uploads/notices/')) {
-                        $publicRoot = realpath(__DIR__ . '/../../public') ?: (__DIR__ . '/../../public');
-                        $oldPath = $publicRoot . $row['file_url'];
+                    if (!empty($row['file_url'])) {
+                        $oldPath = $this->resolveFilesystemPathFromFileUrl($row['file_url']);
                         if ($oldPath && file_exists($oldPath)) {
                             @unlink($oldPath);
                         }
@@ -283,9 +404,8 @@ class NoticesController extends BaseController
                 $this->error('Unauthorized to delete this notice', 403);
             }
 
-            if (!empty($row['file_url']) && str_starts_with($row['file_url'], '/uploads/notices/')) {
-                $publicRoot = realpath(__DIR__ . '/../../public') ?: (__DIR__ . '/../../public');
-                $filePath = $publicRoot . $row['file_url'];
+            if (!empty($row['file_url'])) {
+                $filePath = $this->resolveFilesystemPathFromFileUrl($row['file_url']);
                 if ($filePath && file_exists($filePath)) {
                     @unlink($filePath);
                 }
@@ -318,7 +438,6 @@ class NoticesController extends BaseController
 
     /**
      * GET /api/v1/notices/search?q=...
-     * Simple search across title and notice_note (active notices only)
      */
     public function search(): void
     {
@@ -347,5 +466,3 @@ class NoticesController extends BaseController
         }
     }
 }
-
-

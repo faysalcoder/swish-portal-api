@@ -40,20 +40,16 @@ class Notice extends BaseModel
     }
 
     /**
-     * Return ALL active notices (valid_till IS NULL OR >= now)
+     * Return ALL notices (including expired)
      * No pagination — frontend will handle filtering/paging.
      */
     public function getAllActive(): array
     {
         try {
-            $now = date('Y-m-d H:i:s');
-
             $sql = "SELECT * FROM `{$this->table}` 
-                    WHERE `valid_till` IS NULL OR `valid_till` >= :now
                     ORDER BY `created_at` DESC";
 
             $stmt = $this->db->prepare($sql);
-            $stmt->bindValue(':now', $now);
             $stmt->execute();
 
             $rows = $stmt->fetchAll(\PDO::FETCH_ASSOC);

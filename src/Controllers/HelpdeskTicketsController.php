@@ -77,9 +77,9 @@ class HelpdeskTicketsController extends BaseController
 
         // Allowed filters
         $filters = [];
-        foreach (['assigned_to', 'assigned_by', 'status', 'priority', 'user_id'] as $k) {
+        foreach (['assigned_to', 'assigned_by', 'status', 'priority', 'user_id', 'location_id'] as $k) {
             if (isset($params[$k]) && $params[$k] !== '') {
-                $filters[$k] = in_array($k, ['assigned_to', 'assigned_by', 'user_id']) ? (int)$params[$k] : $params[$k];
+                $filters[$k] = in_array($k, ['assigned_to', 'assigned_by', 'user_id', 'location_id']) ? (int)$params[$k] : $params[$k];
             }
         }
 
@@ -194,6 +194,17 @@ class HelpdeskTicketsController extends BaseController
                 }
             }
 
+            // Normalize location_id input:
+            $location_id = null;
+            if (array_key_exists('location_id', $input)) {
+                if ($input['location_id'] === '' || $input['location_id'] === null) {
+                    $location_id = null;
+                } else {
+                    $location_id = (int)$input['location_id'];
+                    if ($location_id <= 0) $location_id = null;
+                }
+            }
+
             $now = $this->now();
 
             $data = [
@@ -209,7 +220,8 @@ class HelpdeskTicketsController extends BaseController
                 'request_time' => $input['request_time'] ?? $now,
                 'last_update_time' => $now,
                 'resolve_time' => $input['resolve_time'] ?? null,
-                'user_id' => $input['user_id'] ?? $user['id']
+                'user_id' => $input['user_id'] ?? $user['id'],
+                'location_id' => $location_id
             ];
 
             $newId = $this->ticketModel->create($data);
@@ -264,8 +276,8 @@ class HelpdeskTicketsController extends BaseController
                 }
             }
 
-            // normalize possible assigned_to / assigned_by / user_id
-            foreach (['assigned_to', 'assigned_by', 'user_id'] as $intField) {
+            // normalize possible assigned_to / assigned_by / user_id / location_id
+            foreach (['assigned_to', 'assigned_by', 'user_id', 'location_id'] as $intField) {
                 if (array_key_exists($intField, $input)) {
                     if ($intField === 'assigned_to') {
                         if (is_array($input['assigned_to'])) {

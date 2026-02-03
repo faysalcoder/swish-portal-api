@@ -200,7 +200,7 @@ $router->post('/api/v1/auth/change-password', 'App\Controllers\AuthController@ch
 
 /* Users */
 $router->get('/api/v1/users', 'App\Controllers\UsersController@index');
-$router->post('/api/v1/users', 'App.Controllers\UsersController@store'); // keep as-is if intentional fallback
+
 $router->post('/api/v1/users', 'App\Controllers\UsersController@store');
 $router->get('/api/v1/users/{id}', 'App\Controllers\UsersController@show');
 $router->put('/api/v1/users/{id}', 'App\Controllers\UsersController@update');
@@ -231,31 +231,38 @@ $router->delete('/api/v1/locations/{id}', 'App\Controllers\LocationsController@d
 
 /* SOPs & files */
 $router->get('/api/v1/sops', 'App\Controllers\SopsController@index');
-$router->post('/api/v1/sops', 'App\Controllers\SopsController@store');
 $router->get('/api/v1/sops/{id}', 'App\Controllers\SopsController@show');
+$router->post('/api/v1/sops', 'App\Controllers\SopsController@store');
 $router->put('/api/v1/sops/{id}', 'App\Controllers\SopsController@update');
-$router->delete('/api/v1/sops/{id}', 'App\Controllers\SopsController@destroy');
+$router->patch('/api/v1/sops/{id}', 'App\Controllers\SopsController@update');
+$router->delete('/api/v1/sops/{id}', 'App\Controllers\SopsController@delete');
+$router->get('/api/v1/sops/{id}/files', 'App\Controllers\SopsController@files');
+$router->get('/api/v1/sops/{id}/latest-file', 'App\Controllers\SopsController@latestFile');
 
-$router->post('/api/v1/sops/{id}/files', 'App\Controllers\SopFilesController@upload');
-$router->get('/api/v1/sops/{id}/files', 'App\Controllers\SopFilesController@listBySop');
-$router->get('/api/v1/sop-files/{id}', 'App\Controllers\SopFilesController@download');
-$router->delete('/api/v1/sop-files/{id}', 'App\Controllers\SopFilesController@destroy');
 
 /* Rooms & Meetings */
+// Rooms (unchanged)
 $router->get('/api/v1/rooms', 'App\Controllers\RoomsController@index');
 $router->post('/api/v1/rooms', 'App\Controllers\RoomsController@store');
 $router->get('/api/v1/rooms/{id}', 'App\Controllers\RoomsController@show');
 $router->put('/api/v1/rooms/{id}', 'App\Controllers\RoomsController@update');
 $router->delete('/api/v1/rooms/{id}', 'App\Controllers\RoomsController@destroy');
 
+// Meetings (single controller)
 $router->get('/api/v1/meetings', 'App\Controllers\MeetingsController@index');
 $router->post('/api/v1/meetings', 'App\Controllers\MeetingsController@store');
 $router->get('/api/v1/meetings/{id}', 'App\Controllers\MeetingsController@show');
 $router->put('/api/v1/meetings/{id}', 'App\Controllers\MeetingsController@update');
 $router->delete('/api/v1/meetings/{id}', 'App\Controllers\MeetingsController@destroy');
 
-$router->post('/api/v1/meetings/{id}/status', 'App\Controllers\MeetingStatusesController@create');
-$router->get('/api/v1/meetings/{id}/status', 'App\Controllers\MeetingStatusesController@index');
+// Attendees (managed in MeetingsController)
+$router->post('/api/v1/meetings/{id}/attendees', 'App\Controllers\MeetingsController@addAttendee');
+$router->delete('/api/v1/meetings/{id}/attendees/{userId}', 'App\Controllers\MeetingsController@removeAttendee');
+
+// Status (moved into MeetingsController)
+$router->post('/api/v1/meetings/{id}/status', 'App\Controllers\MeetingsController@createStatus');
+$router->get('/api/v1/meetings/{id}/status', 'App\Controllers\MeetingsController@statusIndex');
+
 
 /* Notices & Forms */
 $router->get('/api/v1/notices', 'App\Controllers\NoticesController@index');
@@ -264,11 +271,15 @@ $router->get('/api/v1/notices/{id}', 'App\Controllers\NoticesController@show');
 $router->put('/api/v1/notices/{id}', 'App\Controllers\NoticesController@update');
 $router->delete('/api/v1/notices/{id}', 'App\Controllers\NoticesController@destroy');
 
+// Forms CRUD
 $router->get('/api/v1/forms', 'App\Controllers\FormsController@index');
-$router->post('/api/v1/forms', 'App\Controllers\FormsController@store');
 $router->get('/api/v1/forms/{id}', 'App\Controllers\FormsController@show');
+$router->post('/api/v1/forms', 'App\Controllers\FormsController@store');
 $router->put('/api/v1/forms/{id}', 'App\Controllers\FormsController@update');
 $router->delete('/api/v1/forms/{id}', 'App\Controllers\FormsController@destroy');
+$router->get('/api/v1/forms/my', 'App\Controllers\FormsController@myForms');
+$router->get('/api/v1/forms/search', 'App\Controllers\FormsController@search'); // ?q=term
+
 
 /* RACI */
 $router->get('/api/v1/raci', 'App\Controllers\RaciMatricesController@index');

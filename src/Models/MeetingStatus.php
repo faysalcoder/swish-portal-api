@@ -13,3 +13,4 @@ class MeetingStatus extends BaseModel
         return $this->where(['meeting_id' => $meetingId], $limit, $offset, ['changed_at' => 'DESC']);
     }
 }
+    

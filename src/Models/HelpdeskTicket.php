@@ -24,7 +24,8 @@ class HelpdeskTicket extends BaseModel
         'created_at',
         'updated_at',
         'deleted_at',
-        'trashed_at'
+        'trashed_at',
+        'location_id' // <-- added
     ];
 
     /**
@@ -38,23 +39,27 @@ class HelpdeskTicket extends BaseModel
 
     /**
      * --- existing methods (searchWithCount, fetchWithFilters, countWithFilters, etc.)
-     * We'll reuse these but post-process fetched rows to attach assigned users.
+     * We'll reuse these but post-process fetched rows to attach assigned users and location.
      */
 
     public function searchWithCount(string $q, int $limit = 50, int $offset = 0, bool $showTrashed = false): array
     {
         $like = '%' . $q . '%';
 
-        // Data query
+        // Data query - added location join/selects
         $sql = "SELECT ht.*,
                     u1.name as user_name,
                     u1.email as user_email,
                     u1.designation as user_designation,
                     u2.name as assigned_by_name,
-                    u2.email as assigned_by_email
+                    u2.email as assigned_by_email,
+                    l.id as location_id,
+                    l.country as location_name,
+                    l.address as location_address
                 FROM `{$this->table}` ht
                 LEFT JOIN users u1 ON ht.user_id = u1.id
                 LEFT JOIN users u2 ON ht.assigned_by = u2.id
+                LEFT JOIN locations l ON ht.location_id = l.id
                 WHERE (ht.`title` LIKE :q OR ht.`details` LIKE :q)";
 
         if (!$showTrashed) {
@@ -70,8 +75,9 @@ class HelpdeskTicket extends BaseModel
         $stmt->execute();
         $data = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-        // attach assignments
+        // attach assignments and location
         $this->attachAssignmentsToRows($data);
+        $this->attachLocationsToRows($data);
 
         // Count
         $countSql = "SELECT COUNT(*) AS cnt FROM `{$this->table}` ht WHERE (ht.`title` LIKE :q OR ht.`details` LIKE :q)";
@@ -96,8 +102,8 @@ class HelpdeskTicket extends BaseModel
         }
 
         foreach ($filters as $k => $v) {
-            // Allowed fields only (safety)
-            if (!in_array($k, ['assigned_to', 'assigned_by', 'status', 'priority', 'user_id'])) {
+            // Allowed fields only (safety) - added location_id
+            if (!in_array($k, ['assigned_to', 'assigned_by', 'status', 'priority', 'user_id', 'location_id'])) {
                 continue;
             }
             if ($v === null) {
@@ -116,10 +122,14 @@ class HelpdeskTicket extends BaseModel
                     u1.email as user_email,
                     u1.designation as user_designation,
                     u2.name as assigned_by_name,
-                    u2.email as assigned_by_email
+                    u2.email as assigned_by_email,
+                    l.id as location_id,
+                    l.country as location_name,
+                    l.address as location_address
                 FROM `{$this->table}` ht
                 LEFT JOIN users u1 ON ht.user_id = u1.id
                 LEFT JOIN users u2 ON ht.assigned_by = u2.id
+                LEFT JOIN locations l ON ht.location_id = l.id
                 {$whereSql}
                 ORDER BY ht.request_time DESC
                 LIMIT :limit OFFSET :offset";
@@ -138,8 +148,9 @@ class HelpdeskTicket extends BaseModel
         $stmt->execute();
         $rows = $stmt->fetchAll(PDO::FETCH_ASSOC);
 
-        // attach assignments
+        // attach assignments and location
         $this->attachAssignmentsToRows($rows);
+        $this->attachLocationsToRows($rows);
 
         return $rows;
     }
@@ -154,7 +165,7 @@ class HelpdeskTicket extends BaseModel
         }
 
         foreach ($filters as $k => $v) {
-            if (!in_array($k, ['assigned_to', 'assigned_by', 'status', 'priority', 'user_id'])) {
+            if (!in_array($k, ['assigned_to', 'assigned_by', 'status', 'priority', 'user_id', 'location_id'])) {
                 continue;
             }
             if ($v === null) {
@@ -275,6 +286,15 @@ class HelpdeskTicket extends BaseModel
             $data['request_time'] = $now;
         }
 
+        // Normalize location_id: empty string -> null, numeric -> int
+        if (array_key_exists('location_id', $data)) {
+            if ($data['location_id'] === '' || $data['location_id'] === null) {
+                $data['location_id'] = null;
+            } else {
+                $data['location_id'] = (int)$data['location_id'];
+            }
+        }
+
         // If assigned_to provided as array, use first as primary and remove full array before parent::create
         $assignments = null;
         if (isset($data['assigned_to']) && is_array($data['assigned_to'])) {
@@ -312,6 +332,15 @@ class HelpdeskTicket extends BaseModel
                 // Explicit unassignment - set to null and assignments to empty array
                 $data['assigned_to'] = null;
                 $assignments = [];
+            }
+        }
+
+        // Normalize location_id in update: if provided
+        if (array_key_exists('location_id', $data)) {
+            if ($data['location_id'] === '' || $data['location_id'] === null) {
+                $data['location_id'] = null;
+            } else {
+                $data['location_id'] = (int)$data['location_id'];
             }
         }
 
@@ -464,10 +493,12 @@ class HelpdeskTicket extends BaseModel
     {
         $sql = "SELECT ht.*,
                     u1.name as user_name, u1.email as user_email, u1.designation as user_designation,
-                    u2.name as assigned_by_name, u2.email as assigned_by_email
+                    u2.name as assigned_by_name, u2.email as assigned_by_email,
+                    l.id as location_id, l.country as location_name, l.address as location_address
                 FROM `{$this->table}` ht
                 LEFT JOIN users u1 ON ht.user_id = u1.id
                 LEFT JOIN users u2 ON ht.assigned_by = u2.id
+                LEFT JOIN locations l ON ht.location_id = l.id
                 WHERE ht.id = :id AND ht.deleted_at IS NULL
                 LIMIT 1";
         $stmt = $this->db->prepare($sql);
@@ -480,6 +511,36 @@ class HelpdeskTicket extends BaseModel
         $assignMap = $this->getAssignmentsForTickets([$id]);
         $row['assigned_to_users'] = $assignMap[$id] ?? [];
 
+        // attach location
+        if (isset($row['location_id']) && $row['location_id'] !== null) {
+            $row['location'] = [
+                'id' => (int)$row['location_id'],
+                'name' => $row['location_name'] ?? null,
+                'address' => $row['location_address'] ?? null
+            ];
+        } else {
+            $row['location'] = null;
+        }
+
         return $row ?: null;
+    }
+
+    /**
+     * Attach location info to multiple rows (adds 'location' sub-array)
+     */
+    protected function attachLocationsToRows(array &$rows): void
+    {
+        if (empty($rows)) return;
+        foreach ($rows as &$r) {
+            if (isset($r['location_id']) && $r['location_id'] !== null) {
+                $r['location'] = [
+                    'id' => (int)$r['location_id'],
+                    'name' => $r['location_name'] ?? null,
+                    'address' => $r['location_address'] ?? null
+                ];
+            } else {
+                $r['location'] = null;
+            }
+        }
     }
 }

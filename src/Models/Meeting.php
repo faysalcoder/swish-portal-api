@@ -30,3 +30,4 @@ class Meeting extends BaseModel
         return $this->where(['user_id' => $userId], $limit, $offset, ['start_time' => 'DESC']);
     }
 }
+    
