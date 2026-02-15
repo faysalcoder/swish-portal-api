@@ -216,12 +216,14 @@ class HelpdeskTicketsController extends BaseController
                 'assigned_by' => (int)$user['id'],
                 'assigned_to' => $assigned_to,
                 'status' => $input['status'] ?? 'open',
-                'priority' => $input['priority'] ?? 'medium',
+                'priority' => $input['priority'] ?? 'not_set',
                 'request_time' => $input['request_time'] ?? $now,
                 'last_update_time' => $now,
                 'resolve_time' => $input['resolve_time'] ?? null,
                 'user_id' => $input['user_id'] ?? $user['id'],
-                'location_id' => $location_id
+                'location_id' => $location_id,
+                // remarks field (nullable) - accept provided remarks or null
+                'remarks' => array_key_exists('remarks', $input) ? (trim((string)$input['remarks']) !== '' ? $input['remarks'] : null) : null
             ];
 
             $newId = $this->ticketModel->create($data);
@@ -322,6 +324,16 @@ class HelpdeskTicketsController extends BaseController
             // If the update includes assigned_to, set assigned_by to the current user
             if (array_key_exists('assigned_to', $input)) {
                 $input['assigned_by'] = (int)$user['id'];
+            }
+
+            // Normalize remarks explicitly: treat empty string as null
+            if (array_key_exists('remarks', $input)) {
+                if (is_string($input['remarks'])) {
+                    $trimmedRemarks = trim($input['remarks']);
+                    $input['remarks'] = $trimmedRemarks !== '' ? $input['remarks'] : null;
+                } elseif ($input['remarks'] === '') {
+                    $input['remarks'] = null;
+                }
             }
 
             $now = $this->now();

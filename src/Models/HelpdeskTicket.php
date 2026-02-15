@@ -25,7 +25,8 @@ class HelpdeskTicket extends BaseModel
         'updated_at',
         'deleted_at',
         'trashed_at',
-        'location_id' // <-- added
+        'location_id', // <-- added
+        'remarks' // <-- added remarks field
     ];
 
     /**
