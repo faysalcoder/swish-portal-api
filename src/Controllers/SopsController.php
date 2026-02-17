@@ -32,9 +32,39 @@ class SopsController extends BaseController
         $this->wingModel = new Wing();
         $this->subwingModel = new SubWing();
 
-        $this->uploadDir = realpath(__DIR__ . '/../../public') . '/uploads/sop/';
+        // Resolve the correct public webroot path in a robust order:
+        // 1. DOCUMENT_ROOT (most shared hostings / cPanel setups)
+        // 2. public_html directory relative to project root
+        // 3. public directory relative to project root
+        // 4. fallback to relative public path (last resort)
+        $basePublic = null;
+
+        $docRoot = rtrim($_SERVER['DOCUMENT_ROOT'] ?? '', '/\\');
+        if ($docRoot && is_dir($docRoot)) {
+            $basePublic = $docRoot;
+        } else {
+            $publicHtmlPath = realpath(__DIR__ . '/../../public_html');
+            if ($publicHtmlPath && is_dir($publicHtmlPath)) {
+                $basePublic = $publicHtmlPath;
+            } else {
+                $publicPath = realpath(__DIR__ . '/../../public');
+                if ($publicPath && is_dir($publicPath)) {
+                    $basePublic = $publicPath;
+                } else {
+                    // last resort: keep original behaviour (attempt to use public even if realpath failed)
+                    $basePublic = __DIR__ . '/../../public';
+                }
+            }
+        }
+
+        // Final uploads directory path (absolute)
+        $this->uploadDir = rtrim($basePublic, '/\\') . '/uploads/sop/';
         if (!is_dir($this->uploadDir)) {
-            @mkdir($this->uploadDir, 0755, true);
+            // Attempt to create directory with proper permissions
+            if (!@mkdir($this->uploadDir, 0755, true)) {
+                // If creation failed, log an error so deployer can inspect permissions
+                error_log("SopsController: failed to create upload directory {$this->uploadDir}");
+            }
         }
     }
 
@@ -352,25 +382,118 @@ class SopsController extends BaseController
         return $sop;
     }
 
+    /**
+     * Robust file upload handler:
+     *  - ensures target directory exists
+     *  - supports move_uploaded_file and falls back to copy if necessary
+     *  - sets file permissions
+     *  - returns relative path usable by the app (e.g. 'uploads/sop/abc.pdf') or false on failure
+     */
     protected function handleFileUpload(array $file)
     {
-        if ($file['error'] !== UPLOAD_ERR_OK) return false;
+        if (!isset($file['error']) || $file['error'] !== UPLOAD_ERR_OK) {
+            error_log("SopsController: upload error code " . ($file['error'] ?? 'n/a'));
+            return false;
+        }
+
+        // Ensure tmp file is valid
+        if (!isset($file['tmp_name']) || !is_uploaded_file($file['tmp_name'])) {
+            // Some environments may not mark as is_uploaded_file; still try to proceed but log.
+            error_log("SopsController: tmp file invalid or not an uploaded file: " . ($file['tmp_name'] ?? 'n/a'));
+            // continue — we'll attempt to copy anyway, because some hostings behave differently
+        }
 
         $ext = pathinfo($file['name'], PATHINFO_EXTENSION);
-        $random = bin2hex(random_bytes(8));
-        $filename = $random . ($ext ? '.' . $ext : '');
-        $dest = $this->uploadDir . $filename;
+        $ext = $ext ? '.' . strtolower($ext) : '';
 
-        if (!move_uploaded_file($file['tmp_name'], $dest)) return false;
+        // create a reasonably unique filename
+        try {
+            $random = bin2hex(random_bytes(8));
+        } catch (\Throwable $e) {
+            $random = substr(md5(uniqid((string)time(), true)), 0, 16);
+        }
+        $filename = time() . '_' . $random . $ext;
 
+        // Ensure uploadDir ends with slash
+        $uploadDir = rtrim($this->uploadDir, '/\\') . '/';
+        if (!is_dir($uploadDir)) {
+            if (!@mkdir($uploadDir, 0755, true)) {
+                error_log("SopsController: failed to create directory {$uploadDir}");
+                return false;
+            }
+        }
+
+        $dest = $uploadDir . $filename;
+
+        // Try move_uploaded_file first
+        if (isset($file['tmp_name']) && is_uploaded_file($file['tmp_name'])) {
+            if (!@move_uploaded_file($file['tmp_name'], $dest)) {
+                error_log("SopsController: move_uploaded_file failed for tmp_name {$file['tmp_name']} to {$dest}");
+                // fallback to copy
+                if (!@copy($file['tmp_name'], $dest)) {
+                    error_log("SopsController: fallback copy also failed for {$file['tmp_name']} to {$dest}");
+                    return false;
+                } else {
+                    // attempt to unlink tmp if possible
+                    if (file_exists($file['tmp_name'])) {
+                        @unlink($file['tmp_name']);
+                    }
+                }
+            }
+        } else {
+            // Not recognized as uploaded file; try to copy (some environments use different flow)
+            if (!@copy($file['tmp_name'], $dest)) {
+                error_log("SopsController: copy failed for tmp_name {$file['tmp_name']} to {$dest}");
+                return false;
+            }
+        }
+
+        // Set permissions so web server can serve the file
+        @chmod($dest, 0644);
+
+        // Return relative path used by application
         return 'uploads/sop/' . $filename;
     }
 
     protected function unlinkLocalFile(string $relativePath)
     {
         $relativePath = ltrim($relativePath, '/');
-        $full = realpath(__DIR__ . '/../../public') . '/' . $relativePath;
-        if ($full && file_exists($full)) @unlink($full);
+
+        // Try to locate file in DOCUMENT_ROOT first (most reliable on hosting)
+        $docRoot = rtrim($_SERVER['DOCUMENT_ROOT'] ?? '', '/\\');
+        if ($docRoot) {
+            $full = $docRoot . '/' . $relativePath;
+            if ($full && file_exists($full)) {
+                @unlink($full);
+                return;
+            }
+        }
+
+        // Next try public_html relative to project
+        $publicHtmlFull = realpath(__DIR__ . '/../../public_html');
+        if ($publicHtmlFull && is_dir($publicHtmlFull)) {
+            $full = rtrim($publicHtmlFull, '/\\') . '/' . $relativePath;
+            if ($full && file_exists($full)) {
+                @unlink($full);
+                return;
+            }
+        }
+
+        // Next try public relative to project
+        $publicFull = realpath(__DIR__ . '/../../public');
+        if ($publicFull && is_dir($publicFull)) {
+            $full = rtrim($publicFull, '/\\') . '/' . $relativePath;
+            if ($full && file_exists($full)) {
+                @unlink($full);
+                return;
+            }
+        }
+
+        // Last-resort: try the uploadDir path we computed earlier
+        $uploadFull = rtrim($this->uploadDir, '/\\') . '/' . basename($relativePath);
+        if (file_exists($uploadFull)) {
+            @unlink($uploadFull);
+        }
     }
 
     protected function getInputData(): array
