@@ -138,23 +138,27 @@ class NoticesController extends BaseController
                 $data = $_POST;
             }
 
-            // Basic validations
+            // Basic validation
             if (empty($data['title'])) $this->error('title required', 422);
-            if (empty($data['notice_type'])) $this->error('notice_type required (file or url)', 422);
 
-            if ($data['notice_type'] === 'file' && empty($_FILES['file']['name'])) {
-                $this->error('File is required for notice_type "file"', 422);
+            // Determine notice type based on actual input
+            $hasFile = !empty($_FILES['file']['name']);
+            $hasUrl = !empty($data['file_url']);
+            $hasNote = !empty($data['notice_note']);
+
+            if ($hasFile) {
+                $noticeType = 'file';
+            } elseif ($hasUrl) {
+                $noticeType = 'url';
+            } elseif ($hasNote) {
+                $noticeType = 'text';
+            } else {
+                $this->error('Either a file, a URL, or a notice note is required', 422);
             }
 
-            if ($data['notice_type'] === 'url' && empty($data['file_url'])) {
-                $this->error('file_url is required for notice_type "url"', 422);
-            }
-
-            $fileUrl = null;
-
-            // Handle file upload if provided
-            if (!empty($_FILES['file']['name'])) {
-                // Limits & allowed types
+            // Validate according to the determined type
+            if ($noticeType === 'file') {
+                // File upload validation
                 $maxFileSize = 10 * 1024 * 1024; // 10 MB
                 if ($_FILES['file']['size'] > $maxFileSize) {
                     $this->error('File size exceeds 10MB limit', 422);
@@ -179,7 +183,7 @@ class NoticesController extends BaseController
                     $this->error('Invalid file extension', 422);
                 }
 
-                // Prepare upload directory (filesystem)
+                // Prepare upload directory
                 $publicRoot = $this->getPublicRoot();
                 $uploadDir = rtrim($publicRoot, '/') . '/uploads/notices/';
                 if (!is_dir($uploadDir)) {
@@ -192,19 +196,17 @@ class NoticesController extends BaseController
                 $filename = time() . '_' . bin2hex(random_bytes(6)) . '.' . $fileExt;
                 $targetFile = $uploadDir . $filename;
 
-                // Try moving uploaded file to the intended target
+                // Try moving uploaded file
                 $moved = false;
                 if (@move_uploaded_file($_FILES['file']['tmp_name'], $targetFile)) {
                     $moved = true;
                 } else {
-                    // Fallback: try copy
                     if (@copy($_FILES['file']['tmp_name'], $targetFile)) {
                         $moved = true;
                     }
                 }
 
-                // Extra safety: some hosts may move to public root accidentally.
-                // If we didn't find the file at target but found it at publicRoot/<filename>, move it
+                // Extra safety fallback
                 if (!$moved) {
                     $altLocation = $publicRoot . '/' . $filename;
                     if (file_exists($altLocation)) {
@@ -218,25 +220,23 @@ class NoticesController extends BaseController
                     $this->error('File upload failed', 500);
                 }
 
-                // Ensure correct permissions (optional; adjust as needed)
                 @chmod($targetFile, 0644);
 
-                // Always store web-relative URL in DB
                 $fileUrl = $this->buildWebFileUrl($filename);
-                $data['notice_type'] = 'file';
-            }
-            // Handle external URL if provided
-            elseif (!empty($data['file_url'])) {
+            } elseif ($noticeType === 'url') {
+                // Validate URL
                 if (!filter_var($data['file_url'], FILTER_VALIDATE_URL)) {
                     $this->error('Invalid URL format', 422);
                 }
                 $fileUrl = $data['file_url'];
-                $data['notice_type'] = 'url';
+            } else { // text
+                $fileUrl = null; // no file attached
+                // Notice note is already present, no extra validation needed
             }
 
             $noticeData = [
                 'title' => trim($data['title']),
-                'notice_type' => $data['notice_type'],
+                'notice_type' => $noticeType,
                 'notice_note' => $data['notice_note'] ?? null,
                 'file_url' => $fileUrl,
                 'valid_till' => !empty($data['valid_till']) ? $data['valid_till'] : null,
@@ -274,11 +274,30 @@ class NoticesController extends BaseController
                 $this->error('Unauthorized to update this notice', 403);
             }
 
-            $fileUrl = $row['file_url'] ?? null;
+            // Determine new notice type based on input
+            $hasFile = !empty($_FILES['file']['name']);
+            $hasUrl = !empty($data['file_url']);
+            $hasNote = isset($data['notice_note']) && $data['notice_note'] !== ''; // allow empty to clear
 
-            // If new file uploaded -> validate and replace
-            if (!empty($_FILES['file']['name'])) {
-                $maxFileSize = 10 * 1024 * 1024; // 10 MB
+            // If a new file is uploaded -> file type
+            if ($hasFile) {
+                $noticeType = 'file';
+            } elseif ($hasUrl) {
+                $noticeType = 'url';
+            } elseif ($hasNote) {
+                $noticeType = 'text';
+            } else {
+                // No file, no url, no note – we might be keeping existing type,
+                // but we need at least one of them eventually. We'll check after processing.
+                $noticeType = null; // will be resolved later
+            }
+
+            $fileUrl = $row['file_url']; // keep old by default
+
+            // Handle file upload if present
+            if ($hasFile) {
+                // Validate file
+                $maxFileSize = 10 * 1024 * 1024;
                 if ($_FILES['file']['size'] > $maxFileSize) {
                     $this->error('File size exceeds 10MB limit', 422);
                 }
@@ -310,7 +329,7 @@ class NoticesController extends BaseController
                     }
                 }
 
-                // Delete old local file if present (supports both web-relative and absolute paths)
+                // Delete old local file if present
                 if (!empty($row['file_url'])) {
                     $oldPath = $this->resolveFilesystemPathFromFileUrl($row['file_url']);
                     if ($oldPath && file_exists($oldPath)) {
@@ -318,7 +337,6 @@ class NoticesController extends BaseController
                     }
                 }
 
-                // Generate safe filename and target
                 $filename = time() . '_' . bin2hex(random_bytes(6)) . '.' . $fileExt;
                 $targetFile = $uploadDir . $filename;
 
@@ -331,7 +349,6 @@ class NoticesController extends BaseController
                     }
                 }
 
-                // Extra safety fallback: if file ended up in public root with same filename, move it
                 if (!$moved) {
                     $altLocation = $publicRoot . '/' . $filename;
                     if (file_exists($altLocation)) {
@@ -345,20 +362,19 @@ class NoticesController extends BaseController
 
                 @chmod($targetFile, 0644);
 
-                // Always save web-relative URL to DB
                 $fileUrl = $this->buildWebFileUrl($filename);
-                $data['notice_type'] = 'file';
+                $noticeType = 'file';
             }
-            // If client explicitly provided file_url in payload (update or clear)
+            // Handle URL update/clear
             elseif (array_key_exists('file_url', $data)) {
                 if (!empty($data['file_url'])) {
                     if (!filter_var($data['file_url'], FILTER_VALIDATE_URL)) {
                         $this->error('Invalid URL format', 422);
                     }
                     $fileUrl = $data['file_url'];
-                    $data['notice_type'] = 'url';
+                    $noticeType = 'url';
                 } else {
-                    // clear file_url: delete old local file if existed
+                    // clearing file_url: delete old local file if existed
                     if (!empty($row['file_url'])) {
                         $oldPath = $this->resolveFilesystemPathFromFileUrl($row['file_url']);
                         if ($oldPath && file_exists($oldPath)) {
@@ -366,17 +382,56 @@ class NoticesController extends BaseController
                         }
                     }
                     $fileUrl = null;
+                    // If we cleared file_url but note is present, type becomes text
+                    if ($hasNote) {
+                        $noticeType = 'text';
+                    } else {
+                        // No file, no url, no note – invalid, will be caught later
+                    }
                 }
+            }
+
+            // If no file and no url were provided, but notice_note is set (and maybe we want to keep old file_url?)
+            // We need to decide the final notice_type.
+            // If we haven't set a noticeType yet, we need to determine from existing data + changes.
+            if ($noticeType === null) {
+                // No new file, no new url, but we may have a note.
+                if ($hasNote) {
+                    $noticeType = 'text';
+                    $fileUrl = null; // text type has no attachment
+                    // If there was an old file, delete it because we're switching to text
+                    if (!empty($row['file_url'])) {
+                        $oldPath = $this->resolveFilesystemPathFromFileUrl($row['file_url']);
+                        if ($oldPath && file_exists($oldPath)) {
+                            @unlink($oldPath);
+                        }
+                    }
+                } else {
+                    // No changes to file/url/note – keep existing type and file_url
+                    $noticeType = $row['notice_type'];
+                    $fileUrl = $row['file_url']; // already set
+                }
+            }
+
+            // Final validation: we must have at least one of file_url or notice_note depending on type
+            if ($noticeType === 'file' && empty($fileUrl)) {
+                $this->error('File type requires a file', 422);
+            }
+            if ($noticeType === 'url' && empty($fileUrl)) {
+                $this->error('URL type requires a URL', 422);
+            }
+            if ($noticeType === 'text' && empty($data['notice_note']) && empty($row['notice_note'])) {
+                // If we're setting text but no note provided (and old note is also empty) -> error
+                $this->error('Text type requires a notice note', 422);
             }
 
             // Build update payload
             $updateData = [];
             if (isset($data['title'])) $updateData['title'] = trim($data['title']);
-            if (isset($data['notice_type'])) $updateData['notice_type'] = $data['notice_type'];
+            if (isset($data['notice_type'])) $updateData['notice_type'] = $noticeType; // use computed type
             if (isset($data['notice_note'])) $updateData['notice_note'] = $data['notice_note'];
             if (isset($data['valid_till'])) $updateData['valid_till'] = $data['valid_till'];
 
-            // Always set file_url value (could be null)
             $updateData['file_url'] = $fileUrl;
 
             $ok = $this->model->updateNotice((int)$id, $updateData);
